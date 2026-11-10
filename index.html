@@ -120,7 +120,7 @@
         ball: { x: MIDX, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, lastTeam: 0, passTarget: null, gkIgnore: 0 },
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
-        ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null },
+        ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null, mood: "normal", moodT: 0 },
         cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
       };
       kickoff(0);
@@ -244,6 +244,7 @@
       kick(p, tx - p.x, ty - p.y, v, vz);
       M.longShot = 50;
       SFX.longShot();
+      refJudge("longshot");
     }
 
     // 浮き玉: (tx, ty) に落ちるように、高さと横の速さを決めて蹴る。落ちる場所を ball.land に覚える
@@ -799,7 +800,7 @@
           // 上から落ちてくるボールは取りにくい（高いほど）
           const dropping = b.z > 12 && b.vz < 0;
           if (dropping) chance *= b.z > 24 ? 0.45 : 0.75;
-          if (rnd() < chance) { giveBall(g); SFX.catch(); }
+          if (rnd() < chance) { giveBall(g); SFX.catch(); if (sp > 8) refJudge("save"); }
           else if (dropping && b.z > 24) {
             // 指先をかすめて、そのままゴールへ
             b.gkIgnore = 30; b.vx *= 0.9; b.vy *= 0.9;
@@ -934,18 +935,22 @@
       r.pose = pose; r.poseT = t; r.point = point || null;
     }
     function say(text, t = 70) { M.ref.bubble = { text, t }; }
+    // 審判窓の表情: normal（真剣）/ happy（笑顔）/ surprised（びっくり）
+    function mood(m, t) { M.ref.mood = m; M.ref.moodT = t; }
 
     function refJudge(kind, team) {
       switch (kind) {
-        case "kickoff": setPose("idle", 0); say("キックオフ！", 60); break;
-        case "goal": setPose("point", 150, { x: MIDX, y: MIDY }); say("ゴール！", 110); break;
+        case "kickoff": setPose("idle", 0); say("キックオフ！", 60); mood("normal", 0); break;
+        case "goal": setPose("point", 150, { x: MIDX, y: MIDY }); say("ゴール！", 110); mood("happy", 150); break;
         case "throwin": // ボールをもらう側の攻める向きを指す
           setPose("point", 45, { x: M.ball.x + attackDir(team) * 200, y: M.ball.y }); say("スローイン！", 50); break;
         case "goalkick": setPose("point", 45, { x: ownGoalX(team), y: MIDY }); say("ゴールキック！", 50); break;
         case "playon": // スライディングでボールを奪った: 反則ではない、続けて
-          if (M.ref.poseT === 0 && rnd() < 0.6) { setPose("playon", 40); say("プレーオン！", 45); }
+          if (M.ref.poseT === 0 && rnd() < 0.6) { setPose("playon", 40); say("プレーオン！", 45); mood("surprised", 45); }
           break;
-        case "fulltime": setPose("fulltime", 150); say("試合終了！", 140); break;
+        case "fulltime": setPose("fulltime", 150); say("試合終了！", 140); mood("happy", 150); break;
+        case "longshot": mood("surprised", 50); break;            // ロングシュートにびっくり
+        case "save": if (M.ref.moodT === 0) mood("surprised", 40); break; // 速いシュートをキーパーが止めた
       }
     }
 
@@ -953,6 +958,7 @@
       const r = M.ref, b = M.ball;
       if (r.poseT > 0 && --r.poseT === 0) { r.pose = "idle"; r.point = null; }
       if (r.bubble && --r.bubble.t <= 0) r.bubble = null;
+      if (r.moodT > 0 && --r.moodT === 0) r.mood = "normal";
       // 行き先: キックオフ前とゴールの後はセンターサークルの横。プレー中はボールの斜め後ろ
       let tx, ty;
       if (M.freeze > 0 && (M.freezeKind === "goal" || M.freezeKind === "kickoff")) { tx = REF_SPOT.x; ty = REF_SPOT.y; }
@@ -1197,35 +1203,36 @@
       drawHead(ctx, p, k, x, by - 26, 26);
     }
 
-    // ちび咲耶（審判）のドット絵。黒髪のポニーテールに赤いリボン、マゼンタの目、金のヘッドホン。服は審判の黒に金の縁取り。
-    // 頭と体は1ドットずつの絵（CHIBI_MAP）、腕と足はポーズに合わせて描く。(x, y) は足もと、s は大きさの倍率
+    // ちび咲耶（審判）。設定画（assets/）に合わせ、黒髪の高いポニーテールに長い赤いリボン、茶色の目、
+    // ピンクの着物（黒い襟・黒い帯に金の紐）、黒いショートパンツ、ピンクの縁の黒い籠手とブーツ。
+    // コートでは1ドットずつの絵（CHIBI_MAP）に、ポーズに合わせた腕と足を描き足す。(x, y) は足もと、s は大きさの倍率
     // pose: idle / run / whistle（笛）/ point（pdx, pdy の向きを指す。画面の向き）/ playon（両腕を前へ）/ fulltime（両腕を上げる）
     const CHIBI_MAP = [
-      "..........KKKK..........",
-      "......KKKKKKKKKK..RR....",
-      ".....KKKkkKKKKKKKRRRR...",
-      "....KKKkKKKKKKKKKKRRK...",
-      "...KKKKKKKKKKKKKKKKKKK..",
-      "..GKKKKKKKKKKKKKKKKKKKK.",
-      "..GKKKSKKKKSSKKKKSKKKGKK",
-      ".GGKKSSSKSSSSSSKSSSKKGGK",
-      ".GGKSSSSSSSSSSSSSSSSKGGK",
-      ".GGKSWEESSSSSSSWEESSKGGK",
-      "..GKSEEESSSSSSSEEESSK.KK",
-      "...KSeEEssSSSSseEESSK.KK",
+      "..........KKKK....KKK...",
+      "......KKKKKKKKKKRKKKKK..",
+      ".....KKKkkKKKKKKRRKKKK..",
+      "....KKKkKKKKKKKKKRRKKK..",
+      "...KKKKKKKKKKKKKKKRRRKK.",
+      "..KKKKKKKKKKKKKKKKKRRKK.",
+      "..KKKKSKKKKSSKKKKSKKRRKK",
+      "..KKKSSSKSSSSSSKSSSKKRKK",
+      "..KKSSSSSSSSSSSSSSSSKRKK",
+      "..KKSWEESSSSSSSWEESSK.KK",
+      "..KKSEEESSSSSSSEEESSK.KK",
+      "..KKSeEEssSSSSseEESSK.KK",
       "...KSSSSSSSMMSSSSSSSK..K",
-      "....KSSSSSSSSSSSSSSK...K",
-      ".....KKSSSSSSSSSSKK.....",
-      ".......BBBGGGGBBB.......",
-      "......BBBBBGGBBBBB......",
+      "...KKSSSSSSSSSSSSSSK...K",
+      "....KKKSSSSSSSSSSKK....K",
+      "......PPBBPPPPBBPP......",
+      ".....PPPPBBPPBBPPPP.....",
+      ".....PPPPPBBBBPPPPP.....",
       ".....BBBBBBGGBBBBBB.....",
-      ".....BBBBBBGGBBBBBB.....",
-      ".....BBBBBBGGBBBBBB.....",
-      ".....RRRRRRRRRRRRRR.....",
+      ".....PPPPPGPPGPPPPP.....",
+      ".....pPPPPPPPPPPPPp.....",
       "......BBBBBBBBBBBB......",
     ];
-    const CHIBI_COLORS = { K: "#15121c", k: "#3a2f55", S: "#f6dcc8", s: "#f2a7a7", E: "#ff2d9b", e: "#7a1450", W: "#ffffff",
-      G: "#e8c56a", R: "#d8323c", B: "#17151f", M: "#b85a5a" };
+    const CHIBI_COLORS = { K: "#1b1a22", k: "#3d3d52", S: "#fbe0cc", s: "#f4a9a0", E: "#8a5426", e: "#3a2210", W: "#ffffff",
+      G: "#e0a838", R: "#d8323c", P: "#e8508a", p: "#b83a6c", B: "#18161e", M: "#c06060" };
     let chibiSprite = null;
     function chibiCanvas() {
       if (chibiSprite) return chibiSprite;
@@ -1240,7 +1247,7 @@
     }
 
     function drawChibi(ctx, x, y, s, pose, t, pdx = 1, pdy = 0) {
-      const SK = CHIBI_COLORS.S, SUIT = CHIBI_COLORS.B, GOLD = CHIBI_COLORS.G;
+      const C = CHIBI_COLORS;
       ctx.save();
       ctx.translate(Math.round(x), Math.round(y));
       ctx.scale(s, s);
@@ -1249,32 +1256,66 @@
       // 影
       ctx.fillStyle = "rgba(0,0,0,0.35)";
       ctx.beginPath(); ctx.ellipse(0, 0, 7, 2.5, 0, 0, Math.PI * 2); ctx.fill();
-      // 足（走るときは交互に上がる）と金の靴
+      // 足: ひざ（肌）→ ピンクの縁 → 黒いブーツ（走るときは交互に上がる）
+      const leg = (lx, up) => { R(C.S, lx, -5 - up, 3, 1); R(C.P, lx, -4 - up, 3, 1); R(C.B, lx, -3 - up, 3, 3); };
       const st = pose === "run" ? Math.round(Math.sin(t * 0.9) * 1.5) : 0;
-      R(SUIT, -4, -5 - Math.max(0, st), 3, 4); R(GOLD, -4, -1 - Math.max(0, st), 3, 1);
-      R(SUIT, 1, -5 - Math.max(0, -st), 3, 4); R(GOLD, 1, -1 - Math.max(0, -st), 3, 1);
-      // 腕: 肩 (±6, -10) から角度 a（0=右、π/2=下）へ
+      leg(-4, Math.max(0, st)); leg(1, Math.max(0, -st));
+      // 腕: 肩 (±6, -10) から角度 a（0=右、π/2=下）へ。ピンクの袖 → 黒い籠手 → 手
       const arm = (sx, a, len = 7) => {
-        const ex = sx + Math.cos(a) * len, ey = -10 + Math.sin(a) * len;
-        ctx.strokeStyle = SUIT; ctx.lineWidth = 3; ctx.lineCap = "square";
-        ctx.beginPath(); ctx.moveTo(sx, -10); ctx.lineTo(ex, ey); ctx.stroke();
-        R(SK, Math.round(ex) - 1, Math.round(ey) - 1, 3, 3);
+        const cx = Math.cos(a), cy = Math.sin(a);
+        ctx.lineWidth = 3; ctx.lineCap = "square";
+        ctx.strokeStyle = C.P; ctx.beginPath(); ctx.moveTo(sx, -10); ctx.lineTo(sx + cx * 2.5, -10 + cy * 2.5); ctx.stroke();
+        ctx.strokeStyle = C.B; ctx.beginPath(); ctx.moveTo(sx + cx * 3.5, -10 + cy * 3.5); ctx.lineTo(sx + cx * len, -10 + cy * len); ctx.stroke();
+        const ex = sx + cx * len, ey = -10 + cy * len;
+        R(C.S, Math.round(ex) - 1, Math.round(ey) - 1, 3, 3);
       };
       const swing = pose === "run" ? Math.sin(t * 0.9) * 0.6 : 0;
       let la = Math.PI * 0.65 + swing, ra = Math.PI * 0.35 - swing;
       if (pose === "point") { if (pdx >= 0) ra = Math.atan2(pdy, pdx); else la = Math.atan2(pdy, pdx); }
       if (pose === "playon") { la = Math.PI * 0.9; ra = Math.PI * 0.1; }
       if (pose === "fulltime") { la = -Math.PI * 0.72; ra = -Math.PI * 0.28; }
-      // 腕は体の後ろ（上げる腕は前）に描くため、先に体の絵、あとから腕
       ctx.drawImage(chibiCanvas(), -12, -26);
       arm(-6, la);
       if (pose === "whistle") arm(6, -Math.PI * 0.8, 6); // 右手を口もとへ
       else arm(6, ra);
-      if (pose === "whistle") R(GOLD, -1, -15, 3, 2);    // 笛
+      if (pose === "whistle") R(C.G, -1, -15, 3, 2);     // 笛
       // 笛の音
       if (pose === "whistle" || (pose === "fulltime" && (t >> 3) % 2 === 0)) {
         ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1;
         for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(-13 - i * 3, -17 - i * 3); ctx.lineTo(-16 - i * 3, -19 - i * 4); ctx.stroke(); }
+      }
+      ctx.restore();
+    }
+
+    // 設定画から切り出した絵（タイトルの全身と、右の審判窓の表情3つ）
+    const loadImg = (src) => { const im = new Image(); im.src = src; return im; };
+    const SAKUYA_ART = {
+      front: loadImg("assets/sakuya-front.png"),
+      happy: loadImg("assets/sakuya-face-happy.png"),
+      normal: loadImg("assets/sakuya-face-normal.png"),
+      surprised: loadImg("assets/sakuya-face-surprised.png"),
+    };
+    const artReady = (im) => im.complete && im.naturalWidth > 0;
+
+    // 右の余白の審判窓: 判定に合わせて表情が変わり、判定の言葉を出す
+    function drawRefWindow(ctx, k) {
+      const c = k.retro.colors, r = M.ref;
+      const w = 132, h = 132, x = FIELD_LEFT + FH + (W - FIELD_LEFT - FH - w) / 2, y = 236;
+      ctx.save();
+      ctx.fillStyle = "rgba(4,6,12,0.75)"; ctx.fillRect(x, y, w, h);
+      k.retro.frame(x, y, w, h, 0.55);
+      ctx.font = k.retro.font(8); ctx.fillStyle = c.gold; ctx.textAlign = "center";
+      ctx.fillText("REFEREE", x + w / 2, y + 13);
+      const im = SAKUYA_ART[r.mood] || SAKUYA_ART.normal;
+      if (artReady(im)) {
+        const sz = 100, ar = im.naturalWidth / im.naturalHeight;
+        const dw = ar >= 1 ? sz : sz * ar, dh = ar >= 1 ? sz / ar : sz;
+        const hop = r.mood === "happy" ? Math.abs(Math.sin(k.frame / 6)) * 4 : 0;
+        ctx.drawImage(im, x + (w - dw) / 2, y + 18 + (sz - dh) - hop, dw, dh);
+      } else drawChibi(ctx, x + w / 2, y + 110, 3, "idle", k.frame);
+      if (r.bubble) {
+        ctx.font = k.retro.fontBody(12); ctx.fillStyle = "#ffffff";
+        ctx.fillText(r.bubble.text, x + w / 2, y + h + 18);
       }
       ctx.restore();
     }
@@ -1435,13 +1476,22 @@
         ctx.font = k.retro.fontBody(14); ctx.fillStyle = c.ink; ctx.textAlign = "center";
         ctx.fillText("CNP チーム vs 忍者チーム ・ 2分間の試合で勝てばクリア", W / 2, 380);
         // 審判のちび咲耶: 笛 → 指さし → 両腕を前へ、をくり返す
-        const tp = Math.floor(k.frame / 80) % 3;
-        const glow = ctx.createRadialGradient(120, 450, 10, 120, 450, 95);
+        // 審判のちび咲耶（設定画の全身）。ときどき笛を吹く
+        const glow = ctx.createRadialGradient(120, 430, 10, 120, 430, 110);
         glow.addColorStop(0, k.retro.alpha(c.gold, 0.28)); glow.addColorStop(1, k.retro.alpha(c.gold, 0));
-        ctx.fillStyle = glow; ctx.fillRect(20, 350, 200, 190);
-        drawChibi(ctx, 120, 505, 4, ["whistle", "point", "playon"][tp], k.frame, 1, -0.3);
+        ctx.fillStyle = glow; ctx.fillRect(0, 310, 240, 230);
+        const art = SAKUYA_ART.front;
+        if (artReady(art)) {
+          const dh = 190, dw = dh * (art.naturalWidth / art.naturalHeight);
+          const bob = Math.round(Math.sin(k.frame / 20) * 3);
+          ctx.drawImage(art, 120 - dw / 2, 330 + bob, dw, dh);
+          if (Math.floor(k.frame / 60) % 3 === 0) {
+            ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
+            for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(78 - i * 8, 380 - i * 7); ctx.lineTo(70 - i * 8, 374 - i * 9); ctx.stroke(); }
+          }
+        } else drawChibi(ctx, 120, 505, 4, "whistle", k.frame);
         ctx.font = k.retro.font(9); ctx.fillStyle = c.gold; ctx.textAlign = "center";
-        ctx.fillText("REFEREE SAKUYA", 120, 528);
+        ctx.fillText("REFEREE SAKUYA", 120, 530);
         ctx.textAlign = "left";
         return;
       }
@@ -1544,6 +1594,7 @@
       k.retro.frame(FIELD_LEFT - 2, -2, FH + 4, H + 4, 0.45);
       drawSidePanel(ctx, k);
       drawRadar(ctx, k);
+      drawRefWindow(ctx, k);
 
       if (M.freeze > 0 && k.phase === "playing") {
         if (M.freezeKind === "goal") {

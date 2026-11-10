@@ -120,6 +120,7 @@
         ball: { x: MIDX, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, lastTeam: 0, passTarget: null, gkIgnore: 0 },
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
+        ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null },
         cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
       };
       kickoff(0);
@@ -158,6 +159,7 @@
       M.controlled = team === 0 ? taker : nearestField(0, b);
       M.charge = -1;
       freeze(70, "kickoff", "KICK OFF");
+      refJudge("kickoff");
     }
 
     function freeze(frames, kind, caption) {
@@ -290,8 +292,11 @@
     // ================================================================
     function stepMatch(cmd) {
       M.flash = Math.max(0, M.flash - 1);
+      stepRef();
       if (M.freeze > 0) {
         if (M.freezeKind === "goal") stepBall(); // ゴールネットに吸い込まれる余韻
+        // キックオフは、止まっている最後に審判が笛を吹いて始まる
+        if (M.freezeKind === "kickoff" && M.freeze === 22) { setPose("whistle", 24); SFX.whistle(false); }
         if (--M.freeze === 0) {
           if (M.freezeKind === "goal") kickoff(M.kickoffTeam);
           else if (M.freezeKind === "fulltime") endMatch();
@@ -303,6 +308,7 @@
       if (M.timer >= MATCH_FRAMES) {
         freeze(150, "fulltime", "FULL TIME");
         SFX.whistle(true);
+        refJudge("fulltime");
         return;
       }
 
@@ -847,6 +853,7 @@
             if (p.team === 0) kit.score.add(50);
             SFX.tackle();
             M.flash = 6;
+            refJudge("playon");
             return;
           }
           if (p.slide === 0 && p.kickCd === 0 && d < 14 && o.hold > 8 && rnd() < (p.team === 0 ? 0.1 : ENEMY.steal)) {
@@ -884,6 +891,7 @@
       }
       M.flash = 20;
       freeze(160, "goal", "GOAL!!");
+      refJudge("goal");
       SFX.goal(team === 0);
     }
 
@@ -893,6 +901,7 @@
       M.ball.x = g.x; M.ball.y = g.y; M.ball.vx = M.ball.vy = M.ball.vz = 0; M.ball.z = 0;
       giveBall(g);
       freeze(40, "restart", "GOAL KICK");
+      refJudge("goalkick", team);
       SFX.whistle(false);
     }
 
@@ -912,7 +921,54 @@
         if (d < 40 && d > 0) { q.x += ((q.x - p.x) / d) * (40 - d); q.y += ((q.y - p.y) / d) * (40 - d); }
       }
       freeze(40, "restart", "THROW IN");
+      refJudge("throwin", team);
       SFX.whistle(false);
+    }
+
+    // ================================================================
+    // 審判（ちび咲耶）。選手にもボールにも当たらない、演出だけの存在
+    // ================================================================
+    const REF_SPOT = { x: MIDX - 20, y: MIDY + 95 }; // キックオフのときに立つ場所（センターサークルの横）
+    function setPose(pose, t, point) {
+      const r = M.ref;
+      r.pose = pose; r.poseT = t; r.point = point || null;
+    }
+    function say(text, t = 70) { M.ref.bubble = { text, t }; }
+
+    function refJudge(kind, team) {
+      switch (kind) {
+        case "kickoff": setPose("idle", 0); say("キックオフ！", 60); break;
+        case "goal": setPose("point", 150, { x: MIDX, y: MIDY }); say("ゴール！", 110); break;
+        case "throwin": // ボールをもらう側の攻める向きを指す
+          setPose("point", 45, { x: M.ball.x + attackDir(team) * 200, y: M.ball.y }); say("スローイン！", 50); break;
+        case "goalkick": setPose("point", 45, { x: ownGoalX(team), y: MIDY }); say("ゴールキック！", 50); break;
+        case "playon": // スライディングでボールを奪った: 反則ではない、続けて
+          if (M.ref.poseT === 0 && rnd() < 0.6) { setPose("playon", 40); say("プレーオン！", 45); }
+          break;
+        case "fulltime": setPose("fulltime", 150); say("試合終了！", 140); break;
+      }
+    }
+
+    function stepRef() {
+      const r = M.ref, b = M.ball;
+      if (r.poseT > 0 && --r.poseT === 0) { r.pose = "idle"; r.point = null; }
+      if (r.bubble && --r.bubble.t <= 0) r.bubble = null;
+      // 行き先: キックオフ前とゴールの後はセンターサークルの横。プレー中はボールの斜め後ろ
+      let tx, ty;
+      if (M.freeze > 0 && (M.freezeKind === "goal" || M.freezeKind === "kickoff")) { tx = REF_SPOT.x; ty = REF_SPOT.y; }
+      else if (M.freeze > 0) { tx = r.x; ty = r.y; }
+      else {
+        const f = b.owner || b;
+        tx = f.x - b.vx * 10 - attackDir(b.lastTeam) * 30;
+        ty = f.y + (f.y < MIDY ? 85 : -85);
+      }
+      tx = clamp(tx, LX0 + 20, LX1 - 20); ty = clamp(ty, LY0 + 10, LY1 - 10);
+      const dx = tx - r.x, dy = ty - r.y, d = Math.hypot(dx, dy);
+      const sp = d > 4 ? Math.min(2.4, d * 0.08) : 0;
+      r.vx += ((d ? (dx / d) * sp : 0) - r.vx) * 0.2;
+      r.vy += ((d ? (dy / d) * sp : 0) - r.vy) * 0.2;
+      r.x += r.vx; r.y += r.vy;
+      r.anim += Math.hypot(r.vx, r.vy) * 0.3;
     }
 
     function endMatch() {
@@ -1141,6 +1197,121 @@
       drawHead(ctx, p, k, x, by - 26, 26);
     }
 
+    // ちび咲耶（審判）のドット絵。黒髪のポニーテールに赤いリボン、マゼンタの目、金のヘッドホン。服は審判の黒に金の縁取り。
+    // 頭と体は1ドットずつの絵（CHIBI_MAP）、腕と足はポーズに合わせて描く。(x, y) は足もと、s は大きさの倍率
+    // pose: idle / run / whistle（笛）/ point（pdx, pdy の向きを指す。画面の向き）/ playon（両腕を前へ）/ fulltime（両腕を上げる）
+    const CHIBI_MAP = [
+      "..........KKKK..........",
+      "......KKKKKKKKKK..RR....",
+      ".....KKKkkKKKKKKKRRRR...",
+      "....KKKkKKKKKKKKKKRRK...",
+      "...KKKKKKKKKKKKKKKKKKK..",
+      "..GKKKKKKKKKKKKKKKKKKKK.",
+      "..GKKKSKKKKSSKKKKSKKKGKK",
+      ".GGKKSSSKSSSSSSKSSSKKGGK",
+      ".GGKSSSSSSSSSSSSSSSSKGGK",
+      ".GGKSWEESSSSSSSWEESSKGGK",
+      "..GKSEEESSSSSSSEEESSK.KK",
+      "...KSeEEssSSSSseEESSK.KK",
+      "...KSSSSSSSMMSSSSSSSK..K",
+      "....KSSSSSSSSSSSSSSK...K",
+      ".....KKSSSSSSSSSSKK.....",
+      ".......BBBGGGGBBB.......",
+      "......BBBBBGGBBBBB......",
+      ".....BBBBBBGGBBBBBB.....",
+      ".....BBBBBBGGBBBBBB.....",
+      ".....BBBBBBGGBBBBBB.....",
+      ".....RRRRRRRRRRRRRR.....",
+      "......BBBBBBBBBBBB......",
+    ];
+    const CHIBI_COLORS = { K: "#15121c", k: "#3a2f55", S: "#f6dcc8", s: "#f2a7a7", E: "#ff2d9b", e: "#7a1450", W: "#ffffff",
+      G: "#e8c56a", R: "#d8323c", B: "#17151f", M: "#b85a5a" };
+    let chibiSprite = null;
+    function chibiCanvas() {
+      if (chibiSprite) return chibiSprite;
+      const cv = document.createElement("canvas");
+      cv.width = CHIBI_MAP[0].length; cv.height = CHIBI_MAP.length;
+      const g = cv.getContext("2d");
+      CHIBI_MAP.forEach((row, y) => [...row].forEach((ch, x) => {
+        if (ch === ".") return;
+        g.fillStyle = CHIBI_COLORS[ch]; g.fillRect(x, y, 1, 1);
+      }));
+      return (chibiSprite = cv);
+    }
+
+    function drawChibi(ctx, x, y, s, pose, t, pdx = 1, pdy = 0) {
+      const SK = CHIBI_COLORS.S, SUIT = CHIBI_COLORS.B, GOLD = CHIBI_COLORS.G;
+      ctx.save();
+      ctx.translate(Math.round(x), Math.round(y));
+      ctx.scale(s, s);
+      ctx.imageSmoothingEnabled = false;
+      const R = (c, rx, ry, w, h) => { ctx.fillStyle = c; ctx.fillRect(rx, ry, w, h); };
+      // 影
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.beginPath(); ctx.ellipse(0, 0, 7, 2.5, 0, 0, Math.PI * 2); ctx.fill();
+      // 足（走るときは交互に上がる）と金の靴
+      const st = pose === "run" ? Math.round(Math.sin(t * 0.9) * 1.5) : 0;
+      R(SUIT, -4, -5 - Math.max(0, st), 3, 4); R(GOLD, -4, -1 - Math.max(0, st), 3, 1);
+      R(SUIT, 1, -5 - Math.max(0, -st), 3, 4); R(GOLD, 1, -1 - Math.max(0, -st), 3, 1);
+      // 腕: 肩 (±6, -10) から角度 a（0=右、π/2=下）へ
+      const arm = (sx, a, len = 7) => {
+        const ex = sx + Math.cos(a) * len, ey = -10 + Math.sin(a) * len;
+        ctx.strokeStyle = SUIT; ctx.lineWidth = 3; ctx.lineCap = "square";
+        ctx.beginPath(); ctx.moveTo(sx, -10); ctx.lineTo(ex, ey); ctx.stroke();
+        R(SK, Math.round(ex) - 1, Math.round(ey) - 1, 3, 3);
+      };
+      const swing = pose === "run" ? Math.sin(t * 0.9) * 0.6 : 0;
+      let la = Math.PI * 0.65 + swing, ra = Math.PI * 0.35 - swing;
+      if (pose === "point") { if (pdx >= 0) ra = Math.atan2(pdy, pdx); else la = Math.atan2(pdy, pdx); }
+      if (pose === "playon") { la = Math.PI * 0.9; ra = Math.PI * 0.1; }
+      if (pose === "fulltime") { la = -Math.PI * 0.72; ra = -Math.PI * 0.28; }
+      // 腕は体の後ろ（上げる腕は前）に描くため、先に体の絵、あとから腕
+      ctx.drawImage(chibiCanvas(), -12, -26);
+      arm(-6, la);
+      if (pose === "whistle") arm(6, -Math.PI * 0.8, 6); // 右手を口もとへ
+      else arm(6, ra);
+      if (pose === "whistle") R(GOLD, -1, -15, 3, 2);    // 笛
+      // 笛の音
+      if (pose === "whistle" || (pose === "fulltime" && (t >> 3) % 2 === 0)) {
+        ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1;
+        for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.moveTo(-13 - i * 3, -17 - i * 3); ctx.lineTo(-16 - i * 3, -19 - i * 4); ctx.stroke(); }
+      }
+      ctx.restore();
+    }
+
+    function drawRef(ctx, k, cam) {
+      const r = M.ref;
+      const x = toSX(r.y), y = toSY(r.x, cam);
+      if (y < -60 || y > H + 20) return;
+      let pose = r.pose;
+      if (pose === "idle" && Math.hypot(r.vx, r.vy) > 0.4) pose = "run";
+      let pdx = 1, pdy = 0;
+      if (r.point) { // 指す向き（ワールド → 画面）
+        const wx = r.point.x - r.x, wy = r.point.y - r.y, n = Math.hypot(wx, wy) || 1;
+        pdx = wy / n; pdy = -wx / n;
+      }
+      drawChibi(ctx, x, y, 1.4, pose, r.anim + k.frame * (pose === "fulltime" ? 1 : 0), pdx, pdy);
+    }
+
+    // 審判の吹き出し（頭の上）
+    function drawRefBubble(ctx, k, cam) {
+      const r = M.ref;
+      if (!r.bubble) return;
+      const x = clamp(toSX(r.y), FIELD_LEFT + 60, FIELD_LEFT + FH - 60), y = toSY(r.x, cam) - 44;
+      if (y < 10 || y > H) return;
+      ctx.save();
+      ctx.font = k.retro.fontBody(12);
+      const w = ctx.measureText(r.bubble.text).width + 14;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(Math.round(x - w / 2), y - 16, Math.round(w), 20);
+      ctx.beginPath(); ctx.moveTo(toSX(r.y) - 4, y + 4); ctx.lineTo(toSX(r.y) + 4, y + 4); ctx.lineTo(toSX(r.y), y + 10); ctx.fill();
+      ctx.strokeStyle = k.retro.colors.magenta; ctx.lineWidth = 2;
+      ctx.strokeRect(Math.round(x - w / 2) + 1, y - 15, Math.round(w) - 2, 18);
+      ctx.fillStyle = "#15121c"; ctx.textAlign = "center";
+      ctx.fillText(r.bubble.text, x, y - 1);
+      ctx.restore();
+    }
+
     function drawHead(ctx, p, k, x, y, size) {
       if (p.team === 0 && p.ch) { k.cnp.draw(ctx, p.ch, x, y, size); return; }
       // 忍者チーム: 黒い頭巾に、チーム色の鉢巻
@@ -1263,6 +1434,14 @@
         ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.beginPath(); ctx.ellipse(bx, 338, 7, 2.5, 0, 0, Math.PI * 2); ctx.fill();
         ctx.font = k.retro.fontBody(14); ctx.fillStyle = c.ink; ctx.textAlign = "center";
         ctx.fillText("CNP チーム vs 忍者チーム ・ 2分間の試合で勝てばクリア", W / 2, 380);
+        // 審判のちび咲耶: 笛 → 指さし → 両腕を前へ、をくり返す
+        const tp = Math.floor(k.frame / 80) % 3;
+        const glow = ctx.createRadialGradient(120, 450, 10, 120, 450, 95);
+        glow.addColorStop(0, k.retro.alpha(c.gold, 0.28)); glow.addColorStop(1, k.retro.alpha(c.gold, 0));
+        ctx.fillStyle = glow; ctx.fillRect(20, 350, 200, 190);
+        drawChibi(ctx, 120, 505, 4, ["whistle", "point", "playon"][tp], k.frame, 1, -0.3);
+        ctx.font = k.retro.font(9); ctx.fillStyle = c.gold; ctx.textAlign = "center";
+        ctx.fillText("REFEREE SAKUYA", 120, 528);
         ctx.textAlign = "left";
         return;
       }
@@ -1273,14 +1452,16 @@
       k.retro.crt();
       const b = M.ball;
       // 画面の上にいるもの（ワールドの x が大きいもの）から順に描く
-      const list = M.players.slice().sort((p, q) => q.x - p.x);
+      const list = [...M.players, M.ref].sort((p, q) => q.x - p.x);
       let ballDrawn = false;
       for (const p of list) {
         if (!ballDrawn && b.x > p.x) { drawBall(ctx, b, cam); ballDrawn = true; }
-        drawPlayer(ctx, p, k, cam);
+        if (p === M.ref) drawRef(ctx, k, cam);
+        else drawPlayer(ctx, p, k, cam);
       }
       if (!ballDrawn) drawBall(ctx, b, cam);
       drawGoal(ctx, cam, 0);
+      drawRefBubble(ctx, k, cam);
       // ロングシュートの文字と、ボールの残像
       if (M.longShot > 0 && !b.owner) {
         const bx = toSX(b.y), by = toSY(b.x, cam) - b.z - 4;

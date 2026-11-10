@@ -23,7 +23,7 @@
     <summary>遊び方</summary>
     <ul>
       <li>CNP チーム（青）を操って、忍者チーム（赤）と2分間の試合。勝てばクリア</li>
-      <li>ボールを持っているとき: A でシュート（押し続けると強いシュート）、B でパス（向いている方の味方へ）</li>
+      <li>ボールを持っているとき: A でシュート（押し続けると強いシュート）、B でパス（向いている方の味方の足元へ。長押ししてから離すと浮き玉）</li>
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（ボールに近い選手に自動でも切り替わる）</li>
       <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
       <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を連打、PC は C キーを連打。連打するほど操作中の選手が速くなる。走りすぎるとスタミナが切れて、その選手はしばらくダッシュできない（左のパネルのバー）</li>
@@ -66,6 +66,10 @@
     // 4人のフィールドプレーヤーの基本の位置（自陣ゴールからの割合）。DF・左右の MF・FW のひし形
     const FORMATION = [{ x: 0.2, y: 0.5 }, { x: 0.42, y: 0.24 }, { x: 0.42, y: 0.76 }, { x: 0.62, y: 0.5 }];
 
+    // パス: B を押してすぐ離すとグラウンダー、LOB_HOLD フレーム以上押してから離すと浮き玉。
+    // グラウンダーは味方の足元に、着いたときに PASS_ARRIVE くらいの速さが残る強さで蹴る（転がりの減速は1px で 0.028）
+    // パスの途中のボールは、速さが INTERCEPT_SPEED より速い間は相手が足で止められない（スライディングなら止められる）
+    const LOB_HOLD = 12, PASS_ARRIVE = 3, INTERCEPT_SPEED = 6.5, GRAVITY = 0.25;
     const RETREAT_MARGIN = 20;                 // キーパーが持ったとき、相手はハーフラインからこれだけ自陣側へ下がる
     const KEEPER_HOLD_MIN = 40, KEEPER_HOLD_MAX = 170; // キーパーがボールを持つ長さ（フレーム）
     const keeperHolding = (team) => { const o = M.ball.owner; return !!o && o.isGK && o.team === team; };
@@ -81,8 +85,8 @@
     // （あとでオンライン対戦を足すとき、相手のコマンドを同じ形で渡せるようにしておく）
     // ================================================================
     let M = null;
-    const pending = { aPressed: false, aReleased: false, bPressed: false, dashTaps: 0 };
-    const clearPending = () => { pending.aPressed = pending.aReleased = pending.bPressed = false; pending.dashTaps = 0; };
+    const pending = { aPressed: false, aReleased: false, bPressed: false, bReleased: false, dashTaps: 0 };
+    const clearPending = () => { pending.aPressed = pending.aReleased = pending.bPressed = pending.bReleased = false; pending.dashTaps = 0; };
     // ダッシュ: 連打するほど操作中の選手が速くなる（1回で +tap、毎フレーム decay ずつ減る。1 から 0 まで約2秒）。
     // 速さは走るとき最大 (1 + run) 倍、ドリブル中は (1 + dribble) 倍。
     // 選手ごとのスタミナ（0〜1）がダッシュ中に減り、0 になると「バテ」て、recoverTo まで回復するまでダッシュできない
@@ -107,7 +111,7 @@
         ball: { x: MIDX, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, lastTeam: 0, passTarget: null, gkIgnore: 0 },
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
-        cam: CAM_MIN, ended: false, flash: 0,
+        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1,
       };
       kickoff(0);
     }
@@ -180,7 +184,7 @@
       b.owner = null;
       b.vx = (dx / n) * speed; b.vy = (dy / n) * speed;
       b.vz = vz; b.z = Math.max(b.z, 1);
-      b.lastTeam = p.team; b.passTarget = null; b.gkIgnore = 0;
+      b.lastTeam = p.team; b.passTarget = null; b.land = null; b.gkIgnore = 0;
       p.kickCd = 14; p.hold = 0;
       M.lastKicker = p;
     }
@@ -216,20 +220,49 @@
       return best;
     }
 
+    // 味方の足元へのパス。受け手はその場でボールを待つ（AI も、入力の無い操作中の選手も）
     function passTo(p, m, lob) {
-      const tx = m.x + m.vx * 12, ty = m.y + m.vy * 12;
+      const tx = m.x, ty = m.y;
       const d = Math.hypot(tx - p.x, ty - p.y);
-      const speed = clamp(3.2 + d * 0.032, 5, 10.5);
-      kick(p, tx - p.x, ty - p.y, speed, lob || d > 330 ? 3 : 0.4);
+      if (lob) lobTo(p, tx, ty);
+      else kick(p, tx - p.x, ty - p.y, clamp(PASS_ARRIVE + d * 0.028, 5, 13), 0);
       M.ball.passTarget = m;
       if (m.team === 0) M.controlled = m;
-      SFX.pass();
+      SFX.pass(lob);
     }
 
-    function humanPass(p) {
-      const m = choosePassTarget(p, p.fx, p.fy, 0.25);
-      if (m) passTo(p, m);
-      else { kick(p, p.fx, p.fy, 7, 0.4); SFX.pass(); }
+    // 浮き玉: (tx, ty) に落ちるように、高さと横の速さを決めて蹴る。落ちる場所を ball.land に覚える
+    function lobTo(p, tx, ty) {
+      const d = Math.hypot(tx - p.x, ty - p.y);
+      const vz = clamp(3 + d * 0.005, 3.2, 5);
+      const T = (2 * vz) / GRAVITY;                         // 空中にいるフレーム数
+      const reach = (1 - Math.pow(0.993, T)) / (1 - 0.993); // 横の速さ1あたりの飛ぶ距離（空気の減速込み）
+      kick(p, tx - p.x, ty - p.y, d / reach, vz);
+      M.ball.land = { x: tx, y: ty };
+    }
+
+    // 操作中の選手のパス先: 向いている方向（左右 60度以内）で、向きの線に一番近い味方
+    function facingMate(p) {
+      let best = null, bc = 1e9;
+      for (const m of fieldOf(p.team)) {
+        if (m === p) continue;
+        const dx = m.x - p.x, dy = m.y - p.y, d = Math.hypot(dx, dy);
+        const along = dx * p.fx + dy * p.fy;
+        if (d < 30 || along / d < 0.5) continue;
+        const off = Math.abs(dx * p.fy - dy * p.fx); // 向きの線からのずれ
+        const cost = off * 1.5 + d * 0.2;
+        if (cost < bc) { bc = cost; best = m; }
+      }
+      return best;
+    }
+
+    function humanPass(p, lob) {
+      const m = facingMate(p);
+      if (m) return passTo(p, m, lob);
+      // 向いている方に味方がいなければ、その方向へ蹴り出す
+      if (lob) lobTo(p, p.x + p.fx * 260, p.y + p.fy * 260);
+      else kick(p, p.fx, p.fy, 8, 0);
+      SFX.pass(lob);
     }
 
     function startSlide(p) {
@@ -278,7 +311,7 @@
       if (!c) return;
       if (keeperHolding(1 - c.team)) {
         // 相手のキーパーが持っている間は、操作中の選手も自動で下がる（ボタンは効かない）
-        M.charge = -1;
+        M.charge = -1; M.passCharge = -1;
         if (c.stun === 0 && c.slide === 0) retreat(c);
         return;
       }
@@ -293,8 +326,8 @@
           const fn = Math.hypot(ax, ay);
           c.fx = ax / fn; c.fy = ay / fn;
         } else if (b.passTarget === c && !b.owner) {
-          // 入力が無いときは、自分に来たパスを迎えに行く
-          seek(c, b.x + b.vx * 6, b.y + b.vy * 6, sp);
+          // 入力が無いときは、自分に来たパスを受ける
+          receive(c, sp);
         } else { c.tvx = 0; c.tvy = 0; }
       }
 
@@ -310,12 +343,21 @@
         if (b.owner === c) shoot(c, M.charge, cmd.ay);
         M.charge = -1;
       }
+      // B: ボールを持っていれば押した長さでパスの種類を決める（離したときに蹴る）。持っていなければ選手の切り替え
       if (cmd.bPressed) {
-        if (b.owner === c) humanPass(c);
+        if (b.owner === c) M.passCharge = 0;
         else {
           const m = nearestField(0, b, c);
           if (m) { M.controlled = m; SFX.switch(); }
         }
+      }
+      if (M.passCharge >= 0) {
+        if (b.owner !== c) M.passCharge = -1;
+        else if (cmd.bHeld) M.passCharge = Math.min(LOB_HOLD + 20, M.passCharge + 1);
+      }
+      if (cmd.bReleased && M.passCharge >= 0) {
+        if (b.owner === c) humanPass(c, M.passCharge >= LOB_HOLD);
+        M.passCharge = -1;
       }
 
       // ボールを持っていないときは、ボールに一番近い選手に自動で切り替える
@@ -349,7 +391,7 @@
       const sp = p.team === 1 ? ENEMY.speed : 2.1;
       const ours = b.owner && b.owner.team === p.team;
       if (keeperHolding(1 - p.team)) return retreat(p);
-      if (b.passTarget === p && !b.owner) return seek(p, b.x + b.vx * 6, b.y + b.vy * 6, sp + 0.2);
+      if (b.passTarget === p && !b.owner) return receive(p, sp);
       if (p.team === 1 && !ours && M.chaser[1] === p) {
         const tgt = b.owner || b;
         seek(p, tgt.x + (b.owner ? 0 : b.vx * 8), tgt.y + (b.owner ? 0 : b.vy * 8), sp);
@@ -374,6 +416,17 @@
       seek(p, x, s.y, (p.team === 1 ? ENEMY.speed : 2.1) * 1.8);
       const n = Math.hypot(p.tvx, p.tvy);
       if (n > 0.3) { p.fx = p.tvx / n; p.fy = p.tvy / n; }
+    }
+
+    // パスの受け手: 浮き玉なら落ちる場所へ。グラウンダーはボールの通り道に足を出し、遠いうちはゆっくり寄るだけにする
+    function receive(p, sp) {
+      const b = M.ball;
+      if (b.land && b.z > 0) return seek(p, b.land.x, b.land.y, sp);
+      const d = dist(p, b), v = Math.hypot(b.vx, b.vy);
+      const t = v > 0.3 ? Math.max(0, ((p.x - b.x) * b.vx + (p.y - b.y) * b.vy) / (v * v)) : 0;
+      const px = b.x + b.vx * t, py = b.y + b.vy * t;
+      if (d < 70 || v < 2) return seek(p, px, py, sp);
+      seek(p, px, py, Math.min(sp, 1));
     }
 
     function stepOwnerAI(p) {
@@ -407,7 +460,7 @@
       const pressure = nearestOpponentDist(p);
       if (p.hold > 20 && pressure < 34 && rnd() < 0.06) {
         const m = choosePassTarget(p, dir, 0, -0.3);
-        if (m) passTo(p, m);
+        if (m) passTo(p, m, dist(p, m) > 240);
       }
     }
 
@@ -489,6 +542,8 @@
     function stepBall() {
       const b = M.ball;
       if (b.gkIgnore > 0) b.gkIgnore--;
+      // 止まりかけたパスは、だれのボールでもなくなる
+      if (!b.owner && b.passTarget && b.z === 0 && Math.hypot(b.vx, b.vy) < 0.8) { b.passTarget = null; b.land = null; }
       if (b.owner) {
         const o = b.owner;
         if (o.isGK) {
@@ -538,11 +593,18 @@
       }
       // こぼれ球を拾う
       if (!b.owner && b.z < 12) {
-        let best = null, bd = 13;
+        let best = null, bd = 1e9;
+        const tgt = b.passTarget, speed = Math.hypot(b.vx, b.vy);
         for (const p of M.players) {
           if (p.stun > 0 || p.kickCd > 0) continue;
+          let reach = 13;
+          if (tgt) {
+            if (p === tgt) reach = 19;                                   // 受け手は少し遠くからでも足を出せる
+            else if (p.team === tgt.team) continue;                      // 味方へのパスを横取りしない
+            else if (speed > INTERCEPT_SPEED && p.slide === 0) continue; // 速いパスは相手も足では止められない
+          }
           const d = dist(p, b);
-          if (d < bd) { bd = d; best = p; }
+          if (d < reach && d < bd) { bd = d; best = p; }
         }
         if (best) {
           if (best.slide > 0) {
@@ -654,7 +716,7 @@
     // ================================================================
     const SFX = {
       shoot(t) { kit.sfx.noise({ dur: 0.08 + t * 0.08, gain: 0.16 + t * 0.1, filterFrom: 2600, filterTo: 300 }); kit.sfx.tone({ freq: 220 + t * 200, to: 90, dur: 0.08, gain: 0.08 }); },
-      pass() { kit.sfx.tone({ freq: 330, to: 180, dur: 0.05, gain: 0.08 }); },
+      pass(lob) { kit.sfx.tone(lob ? { freq: 260, to: 520, dur: 0.12, gain: 0.08, type: "triangle" } : { freq: 330, to: 180, dur: 0.05, gain: 0.08 }); },
       bounce() { kit.sfx.tone({ freq: 160, to: 110, dur: 0.04, gain: 0.05, type: "triangle" }); },
       slide() { kit.sfx.noise({ dur: 0.18, gain: 0.08, filterFrom: 900, filterTo: 200 }); },
       tackle() { kit.sfx.hit(); },
@@ -691,22 +753,22 @@
         buttons: [
           { id: "shoot", slot: "A", hint: "SHOOT", ariaLabel: "シュート（長押しで強く）／スライディング", keys: ["KeyX"],
             onPress: () => { pending.aPressed = true; }, onRelease: () => { pending.aReleased = true; } },
-          { id: "pass", slot: "B", hint: "PASS", ariaLabel: "パス／選手の切り替え", keys: ["KeyZ"],
-            onPress: () => { pending.bPressed = true; } },
+          { id: "pass", slot: "B", hint: "PASS", ariaLabel: "パス（長押しで浮き玉）／選手の切り替え", keys: ["KeyZ"],
+            onPress: () => { pending.bPressed = true; }, onRelease: () => { pending.bReleased = true; } },
         ],
       },
       help: {
-        mobile: "左のスティックで移動、右側の空いたところを連打でダッシュ。A でシュート・スライディング、B でパス・切り替え",
-        pc: "矢印 / WASD で移動、C 連打でダッシュ、X でシュート・スライディング、Z でパス・切り替え（P で一時停止）",
+        mobile: "左のスティックで移動、右側の空いたところを連打でダッシュ。A でシュート・スライディング、B でパス（長押しで浮き玉）・切り替え",
+        pc: "矢印 / WASD で移動、C 連打でダッシュ、X でシュート・スライディング、Z でパス（長押しで浮き玉）・切り替え（P で一時停止）",
         playing: "キックオフ！ 2分で相手より多く点を取れば勝ち",
       },
       onStart: () => { clearPending(); newMatch(); },
-      onInputReset: () => { if (M) { M.charge = -1; for (const p of M.players) p.boost = 0; } clearPending(); },
+      onInputReset: () => { if (M) { M.charge = -1; M.passCharge = -1; for (const p of M.players) p.boost = 0; } clearPending(); },
       // PC: C キーの連打でダッシュ（押しっぱなしの自動リピートは数えない）
       onKeyDown: (e) => { if (e.code === "KeyC" && !e.repeat) pending.dashTaps++; },
       update: (k) => {
         const a = k.input.axis();
-        const cmd = { ax: -a.y, ay: a.x, aHeld: !!k.input.buttons.shoot, ...pending };
+        const cmd = { ax: -a.y, ay: a.x, aHeld: !!k.input.buttons.shoot, bHeld: !!k.input.buttons.pass, ...pending };
         clearPending();
         stepMatch(cmd);
       },
@@ -989,6 +1051,12 @@
       }
       if (!ballDrawn) drawBall(ctx, b, cam);
       drawGoal(ctx, cam, 0);
+      // 浮き玉の落ちる場所
+      if (b.land && b.z > 0 && !b.owner) {
+        const lx = toSX(b.land.y), ly = toSY(b.land.x, cam);
+        ctx.strokeStyle = b.lastTeam === 0 ? "#3bd1ff" : k.retro.alpha(c.danger, 0.8); ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(lx - 5, ly - 5); ctx.lineTo(lx + 5, ly + 5); ctx.moveTo(lx + 5, ly - 5); ctx.lineTo(lx - 5, ly + 5); ctx.stroke();
+      }
 
       // 操作中の選手の目印と、シュートの溜め
       const cp = M.controlled;
@@ -1025,6 +1093,16 @@
           const r = Math.min(1, M.charge / 30);
           ctx.fillStyle = "rgba(4,6,12,0.7)"; ctx.fillRect(x - 16, y - 10, 32, 5);
           ctx.fillStyle = r >= 1 ? c.magenta : c.gold; ctx.fillRect(x - 16, y - 10, 32 * r, 5);
+        }
+        if (M.passCharge >= 0) {
+          // B の長押し: 溜まると LOB（浮き玉）
+          const r = Math.min(1, M.passCharge / LOB_HOLD);
+          ctx.fillStyle = "rgba(4,6,12,0.7)"; ctx.fillRect(x - 16, y - 10, 32, 5);
+          ctx.fillStyle = "#3bd1ff"; ctx.fillRect(x - 16, y - 10, 32 * r, 5);
+          if (r >= 1) {
+            ctx.save(); ctx.font = k.retro.font(8); ctx.textAlign = "center"; ctx.fillStyle = "#3bd1ff";
+            ctx.fillText("LOB", x, y - 14); ctx.restore();
+          }
         }
       }
       if (M.flash > 0 && M.freezeKind === "goal") {

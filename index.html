@@ -24,6 +24,7 @@
     <ul>
       <li>CNP チーム（青）を操って、忍者チーム（赤）と2分間の試合。勝てばクリア</li>
       <li>ボールを持っているとき: A でシュート（押し続けると強いシュート）、B でパス（向いている方の味方の足元へ。長押ししてから離すと浮き玉）、A と B を同時に押すとロングシュート（どこからでもゴールへ。左右を入れるとすみを狙う）</li>
+      <li>浮き球: ボールが浮いて近くにあるときに A を押すと、高ければヘディング、低ければボレーで直接蹴る（ゴールの近くで前を向いていればシュート）</li>
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（ボールに近い選手に自動でも切り替わる）</li>
       <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
       <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を連打、PC は C キーを連打。連打するほど操作中の選手が速くなる。走りすぎるとスタミナが切れて、その選手はしばらくダッシュできない（左のパネルのバー）</li>
@@ -62,7 +63,7 @@
     const LINE = "rgba(255,255,255,0.82)";
     const SHIRT = [{ field: "#2f8fff", gk: "#e8c56a" }, { field: "#e0333d", gk: "#3bd16f" }];
     // 試合の難しさ（忍者チームの強さ）
-    const ENEMY = { speed: 1.95, dribble: 1.8, steal: 0.035, slide: 0.012, shootRange: 300 };
+    const ENEMY = { speed: 1.95, dribble: 1.8, steal: 0.035, slide: 0.012, longShot: 0.004 };
     // 4人のフィールドプレーヤーの基本の位置（自陣ゴールからの割合）。DF・左右の MF・FW のひし形
     const FORMATION = [{ x: 0.2, y: 0.5 }, { x: 0.42, y: 0.24 }, { x: 0.42, y: 0.76 }, { x: 0.62, y: 0.5 }];
 
@@ -73,8 +74,12 @@
     // ロングシュート: ボールを持って A と B を COMBO_WINDOW フレーム以内に続けて押す。
     // ゴールの線を LONG_Z の高さで越える弧を計算して蹴る。遠いほどねらいがぶれる
     const COMBO_WINDOW = 8, LONG_SPEED = 12, LONG_Z = 22;
+    // ヘディング・ボレー: 浮いているボール（高さ AIR_MIN〜AIR_MAX）に STRIKE_REACH まで近づいて蹴る。HEAD_Z より高ければヘディング。
+    // 操作中の選手は、ボールが浮いて近くにあるときに A を押すと、STRIKE_BUFFER フレームのあいだ当たるのを待つ
+    const AIR_MIN = 5, AIR_MAX = 40, HEAD_Z = 20, STRIKE_REACH = 20, STRIKE_BUFFER = 20;
     const RETREAT_MARGIN = 20;                 // キーパーが持ったとき、相手はハーフラインからこれだけ自陣側へ下がる
     const KEEPER_HOLD_MIN = 40, KEEPER_HOLD_MAX = 170; // キーパーがボールを持つ長さ（フレーム）
+    const KEEPER_DIVE_SPEED = 1.7;             // シュートに反応して横へ動く速さ
     const keeperHolding = (team) => { const o = M.ball.owner; return !!o && o.isGK && o.team === team; };
     const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
     const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -97,7 +102,8 @@
 
     function makePlayer(team, idx, isGK, ch) {
       return { team, idx, isGK, ch, x: 0, y: 0, vx: 0, vy: 0, fx: attackDir(team), fy: 0,
-        stun: 0, slide: 0, kickCd: 0, hold: 0, anim: 0, boost: 0, stamina: 1, tired: false };
+        stun: 0, slide: 0, kickCd: 0, hold: 0, anim: 0, boost: 0, stamina: 1, tired: false,
+        role: "shape", markT: null, runSpot: null, airCd: 0, act: null };
     }
 
     function newMatch() {
@@ -114,7 +120,7 @@
         ball: { x: MIDX, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, lastTeam: 0, passTarget: null, gkIgnore: 0 },
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
-        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, lastA: -99, lastB: -99, longShot: 0,
+        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
       };
       kickoff(0);
     }
@@ -205,22 +211,6 @@
       }
       kick(p, tx - p.x, ty - p.y, 7.5 + t * 5, 1 + t * 3.1);
       SFX.shoot(t);
-    }
-
-    function choosePassTarget(p, dirX, dirY, minDot) {
-      let best = null, bs = -1e9;
-      for (const m of fieldOf(p.team)) {
-        if (m === p) continue;
-        const dx = m.x - p.x, dy = m.y - p.y, d = Math.hypot(dx, dy);
-        if (d < 40) continue;
-        const dot = (dx * dirX + dy * dirY) / d;
-        if (dot < minDot) continue;
-        const open = Math.min(nearestOpponentDist(m), 90) / 150;
-        const forward = ((m.x - p.x) * attackDir(p.team)) / 900;
-        const s = dot * 1.2 - d / 700 + open + forward;
-        if (s > bs) { bs = s; best = m; }
-      }
-      return best;
     }
 
     // 味方の足元へのパス。受け手はその場でボールを待つ（AI も、入力の無い操作中の選手も）
@@ -317,7 +307,7 @@
       }
 
       stepHuman(cmd);
-      updateChasers();
+      updateRoles();
       for (const p of M.players) if (p !== M.controlled) stepAI(p);
       for (const p of M.players) movePlayer(p);
       separate();
@@ -367,7 +357,14 @@
       }
       if (cmd.aPressed) {
         if (b.owner === c) M.charge = 0;
+        else if (!b.owner && b.z > 3 && dist(c, b) < 80) M.strikeBuf = STRIKE_BUFFER; // 浮き球にはヘディング・ボレー
         else startSlide(c);
+      }
+      if (M.strikeBuf > 0) {
+        M.strikeBuf--;
+        if (canStrike(c)) { airStrike(c, cmd.ay); M.strikeBuf = 0; }
+        // 待っている間は、ボールが来るところへ自動で寄る（ヘディング・ボレーの手助け）
+        else if (!b.owner && b.z > 3 && c.stun === 0 && c.slide === 0) seek(c, b.x + b.vx * 3, b.y + b.vy * 3, 2.6);
       }
       if (M.charge >= 0) {
         if (b.owner !== c) M.charge = -1;
@@ -408,13 +405,85 @@
       p.tvx = (dx / d) * s; p.tvy = (dy / d) * s;
     }
 
-    function updateChasers() {
-      // 守っている側で、ボールに一番近い選手が追いかける（少しのことでは交代しない）
+    // ---------- 役割 ----------
+    // 攻め（ボールを持っている側）: ボールを持たない選手は support（空いていてパスの通る場所へ走る）
+    // 守り: press（ボールを追う）、double（自陣の深いところでは2人目が挟む）/ cover（2人目は後ろでカバー）、
+    //       mark（残りは相手をマークし、ゴール側に立ってパスコースをふさぐ）
+    // 操作中の選手には役割を付けない（人が動かす）
+    function updateRoles() {
+      const b = M.ball, owner = b.owner;
+      for (const p of M.players) if (!p.isGK) p.role = "shape";
       for (let t = 0; t < 2; t++) {
-        const n = nearestField(t, M.ball);
-        const cur = M.chaser[t];
-        if (!cur || (n !== cur && dist(n, M.ball) + 30 < dist(cur, M.ball))) M.chaser[t] = n;
+        const ai = fieldOf(t).filter((p) => p !== M.controlled);
+        if (owner && owner.team === t) {
+          for (const p of ai) if (p !== owner) p.role = "support";
+          continue;
+        }
+        const n = nearestField(t, b), cur = M.chaser[t];
+        if (!cur || (n !== cur && dist(n, b) + 30 < dist(cur, b))) M.chaser[t] = n;
+        const presser = M.chaser[t];
+        if (presser !== M.controlled) presser.role = "press";
+        const rest = ai.filter((p) => p !== presser).sort((p, q) => dist(p, b) - dist(q, b));
+        if (!owner || owner.isGK) {
+          // こぼれ球: 近い2人目も拾いに行く
+          if (!owner && rest[0] && dist(rest[0], b) < 90) rest[0].role = "loose";
+          continue;
+        }
+        let i = 0;
+        if (rest.length) {
+          const deep = Math.abs(b.x - ownGoalX(t)) < (LX1 - LX0) * 0.42;
+          rest[0].role = deep ? "double" : "cover";
+          i = 1;
+        }
+        // ゴールに近い相手から順に、近い選手がマークに付く
+        const attackers = fieldOf(1 - t).filter((q) => q !== owner)
+          .sort((q, r) => Math.abs(q.x - ownGoalX(t)) - Math.abs(r.x - ownGoalX(t)));
+        const taken = new Set();
+        for (; i < rest.length; i++) {
+          const p = rest[i];
+          let best = null, bd = 1e9;
+          for (const q of attackers) { if (taken.has(q)) continue; const d = dist(p, q); if (d < bd) { bd = d; best = q; } }
+          if (best) { taken.add(best); p.role = "mark"; p.markT = best; }
+        }
       }
+    }
+
+    // a→b の線（パスコース）に、team の相手が一番近づいている距離
+    function laneClear(ax, ay, bx, by, team, skipGK) {
+      const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
+      let best = 1e9;
+      for (const q of M.players) {
+        if (q.team === team || (skipGK && q.isGK)) continue;
+        const t = ((q.x - ax) * dx + (q.y - ay) * dy) / L2;
+        if (t < 0.06 || t > 1) continue;
+        best = Math.min(best, Math.hypot(q.x - (ax + dx * t), q.y - (ay + dy * t)));
+      }
+      return best;
+    }
+    function opennessAt(x, y, team) {
+      let best = 1e9;
+      for (const q of M.players) if (q.team !== team && !q.isGK) best = Math.min(best, Math.hypot(q.x - x, q.y - y));
+      return best;
+    }
+
+    // 攻めの走り込み: 前の、相手から離れていて、ボールからのパスコースが通る場所を選ぶ（15フレームごとに選び直す）
+    function pickRunSpot(p, owner) {
+      const dir = attackDir(p.team);
+      const base = formationSpot(p, true);
+      let best = base, bs = -1e9;
+      for (const ox of [-40, 20, 80, 140]) for (const oy of [-90, -45, 0, 45, 90]) {
+        let x = base.x + ox * dir, y = base.y + oy;
+        x = clamp(x, LX0 + 40, LX1 - 40); y = clamp(y, LY0 + 20, LY1 - 20);
+        // DF（idx 0）は、ボールより後ろに残って守りにそなえる
+        if (p.idx === 0 && (x - owner.x) * dir > -70) continue;
+        const open = Math.min(opennessAt(x, y, p.team), 110) / 110;
+        const lane = Math.min(laneClear(owner.x, owner.y, x, y, p.team), 50) / 50;
+        const prog = ((x - owner.x) * dir) / 400;
+        const dOwn = Math.hypot(x - owner.x, y - owner.y);
+        const sc = open + lane * 0.8 + prog - Math.hypot(x - p.x, y - p.y) / 500 - (dOwn < 70 ? 0.6 : 0) - (dOwn > 420 ? 0.5 : 0);
+        if (sc > bs) { bs = sc; best = { x, y }; }
+      }
+      return best;
     }
 
     function stepAI(p) {
@@ -423,24 +492,92 @@
       if (p.isGK) return stepKeeper(p);
       if (b.owner === p) return stepOwnerAI(p);
       const sp = p.team === 1 ? ENEMY.speed : 2.1;
-      const ours = b.owner && b.owner.team === p.team;
       if (keeperHolding(1 - p.team)) return retreat(p);
+      if (aiAirStrike(p)) return;
       if (b.passTarget === p && !b.owner) return receive(p, sp);
-      if (p.team === 1 && !ours && M.chaser[1] === p) {
-        const tgt = b.owner || b;
-        seek(p, tgt.x + (b.owner ? 0 : b.vx * 8), tgt.y + (b.owner ? 0 : b.vy * 8), sp);
-        // 近づいたらときどきスライディング
-        if (b.owner && b.owner.team === 0 && dist(p, b.owner) < 36 && rnd() < ENEMY.slide) {
-          const d = dist(p, b.owner) || 1;
-          p.fx = (b.owner.x - p.x) / d; p.fy = (b.owner.y - p.y) / d;
-          startSlide(p);
+      const owner = b.owner;
+      const g = { x: ownGoalX(p.team), y: MIDY };
+      // 役割はフレームの最初に決めている。同じフレームで先に動いた選手がパスを出していたら、
+      // 持ち主がいない（走り込み中の選手はそのまま走り、挟みに行く選手は後ろのカバーに回る）
+      let role = p.role;
+      if (!owner && role === "support") return p.runSpot ? seek(p, p.runSpot.x, p.runSpot.y, sp * 0.95) : seek(p, formationSpot(p, true).x, formationSpot(p, true).y, sp * 0.9);
+      if (!owner && role === "double") role = "cover";
+      switch (role) {
+        case "press": {
+          const tgt = owner || b;
+          seek(p, tgt.x + (owner ? 0 : b.vx * 8), tgt.y + (owner ? 0 : b.vy * 8), sp);
+          // 忍者チームは、近づいたらときどきスライディング
+          if (p.team === 1 && owner && owner.team === 0 && dist(p, owner) < 36 && rnd() < ENEMY.slide) {
+            const d = dist(p, owner) || 1;
+            p.fx = (owner.x - p.x) / d; p.fy = (owner.y - p.y) / d;
+            startSlide(p);
+          }
+          return;
         }
-        return;
+        case "double": { // ボールを持つ相手の、ゴール側から挟む
+          const d = Math.hypot(g.x - owner.x, g.y - owner.y) || 1;
+          return seek(p, owner.x + ((g.x - owner.x) / d) * 16, owner.y + ((g.y - owner.y) / d) * 16, sp);
+        }
+        case "cover": { // ボールとゴールのあいだ、ボールから 80px 下がったところ
+          const d = Math.hypot(g.x - b.x, g.y - b.y) || 1;
+          return seek(p, b.x + ((g.x - b.x) / d) * 80, b.y + ((g.y - b.y) / d) * 80, sp * 0.95);
+        }
+        case "mark": { // マークする相手の、ゴール側かつ少しボール側（パスコースをふさぐ）
+          const q = p.markT;
+          const dg = Math.hypot(g.x - q.x, g.y - q.y) || 1, db = Math.hypot(b.x - q.x, b.y - q.y) || 1;
+          return seek(p, q.x + ((g.x - q.x) / dg) * 15 + ((b.x - q.x) / db) * 10, q.y + ((g.y - q.y) / dg) * 15 + ((b.y - q.y) / db) * 10, sp * 0.95);
+        }
+        case "support": {
+          if (!p.runSpot || (M.timer + p.idx * 4) % 15 === 0) p.runSpot = pickRunSpot(p, owner);
+          return seek(p, p.runSpot.x, p.runSpot.y, sp * 0.95);
+        }
+        case "loose":
+          return seek(p, b.x + b.vx * 6, b.y + b.vy * 6, sp);
       }
-      // 味方のこぼれ球は、近ければ拾いに行く
-      if (!b.owner && b.z < 20 && dist(p, b) < 44) return seek(p, b.x, b.y, sp);
-      const s = formationSpot(p, ours);
+      const s = formationSpot(p, false);
       seek(p, s.x, s.y, sp * 0.9);
+    }
+
+    // ---------- ヘディング・ボレー ----------
+    function canStrike(p) {
+      const b = M.ball;
+      return !b.owner && p.stun === 0 && p.slide === 0 && p.kickCd === 0 &&
+        b.z >= AIR_MIN && b.z <= AIR_MAX && dist(p, b) < STRIKE_REACH;
+    }
+
+    // 浮き球を直接蹴る。攻める向きを向いていればゴールへ（横の入力ですみ）、そうでなければ向いている方へ
+    function airStrike(p, aimY) {
+      const b = M.ball;
+      const header = b.z > HEAD_Z;
+      const dir = attackDir(p.team);
+      const gx = oppGoalX(p.team);
+      const near = Math.abs(gx - p.x) < 420;
+      let tx, ty;
+      if (near && p.fx * dir > -0.3) {
+        tx = gx + dir * 10;
+        ty = MIDY + clamp(aimY + (rnd() * 2 - 1) * 0.5, -1, 1) * GOAL_HALF * 0.8;
+      } else {
+        tx = p.x + (p.fx || dir) * 200; ty = p.y + p.fy * 200;
+      }
+      kick(p, tx - p.x, ty - p.y, header ? 8.5 : 11.5, header ? 0.6 : 1.6);
+      p.act = { kind: header ? "head" : "volley", t: 16 };
+      SFX.airStrike(header);
+    }
+
+    // AI の浮き球: 攻めではゴールの近くならヘディング・ボレーでシュート、守りでは前へはじき返す。1回の浮き球につき1回だけ考える
+    function aiAirStrike(p) {
+      const b = M.ball;
+      if (p.airCd > 0 || !canStrike(p)) return false;
+      p.airCd = 30;
+      const attacking = b.lastTeam === p.team;
+      const near = Math.abs(oppGoalX(p.team) - p.x) < 330;
+      const go = attacking ? near && rnd() < 0.65 : rnd() < 0.7;
+      if (!go) return false;
+      const dir = attackDir(p.team);
+      if (!attacking) { p.fx = dir; p.fy = (rnd() - 0.5) * 0.8; }
+      else { p.fx = dir; p.fy = 0; }
+      airStrike(p, rnd() * 2 - 1);
+      return true;
     }
 
     // 相手のキーパーがボールを持ったら、自陣（ハーフラインの向こう）まで急いで下がる
@@ -463,11 +600,58 @@
       seek(p, px, py, Math.min(sp, 1));
     }
 
+    // ボールを持った AI のパス先: 前に進める・相手から離れている・パスコースが通る味方。コースがふさがれていれば浮き玉
+    function bestPassOption(p) {
+      const dir = attackDir(p.team), gx = oppGoalX(p.team);
+      let best = null;
+      for (const m of fieldOf(p.team)) {
+        if (m === p) continue;
+        const d = dist(p, m);
+        if (d < 50 || d > 560) continue;
+        const lane = laneClear(p.x, p.y, m.x, m.y, p.team);
+        const lob = lane < 18;
+        if (lob && d < 150) continue;
+        const prog = ((m.x - p.x) * dir) / 300;
+        const open = Math.min(opennessAt(m.x, m.y, p.team), 100) / 100;
+        const closer = (Math.abs(gx - p.x) - Math.abs(gx - m.x)) / 500;
+        const score = prog * 0.6 + open + (lob ? 0.25 : Math.min(lane, 60) / 60 * 0.7) + closer - d / 900;
+        if (!best || score > best.score) best = { m, lob, score };
+      }
+      return best;
+    }
+
     function stepOwnerAI(p) {
       p.hold++;
       const dir = attackDir(p.team);
       const gx = oppGoalX(p.team);
       const distGoal = Math.abs(gx - p.x);
+      const pressure = nearestOpponentDist(p);
+      const inFront = Math.abs(p.y - MIDY) < 170;
+      // シュート: ゴールに近く正面寄りで、シュートコースが空いているか、囲まれたら
+      const shotLane = distGoal < 270 ? laneClear(p.x, p.y, gx, MIDY, p.team, true) : 0;
+      if (inFront && distGoal < 270 && (distGoal < 150 || pressure < 40 || (shotLane > 14 && rnd() < 0.12))) {
+        // キーパーのいない側のすみを狙う
+        const gk = gkOf(1 - p.team);
+        const side = Math.abs(gk.y - MIDY) > 8 ? (gk.y > MIDY ? -1 : 1) : rnd() < 0.5 ? -1 : 1;
+        const ty2 = MIDY + side * GOAL_HALF * (0.5 + rnd() * 0.45);
+        p.fx = dir; p.fy = 0;
+        kick(p, gx + dir * 20 - p.x, ty2 - p.y, 9.5 + rnd() * 3, 0.6 + rnd() * 1.6);
+        SFX.shoot(0.5);
+        return;
+      }
+      // ロングシュート（忍者チームだけ。空いていれば、たまに）
+      if (p.team === 1 && inFront && distGoal > 230 && distGoal < 430 && pressure > 60 && rnd() < ENEMY.longShot) {
+        p.fx = dir; p.fy = 0;
+        return longShot(p, rnd() * 2 - 1);
+      }
+      // パス: 6フレームごとに考える。前が空いていればドリブルで進み、
+      // 前へ進めるいいパス・囲まれた・持ちすぎ、のどれかで出す（後ろや横へは、囲まれたときだけ）
+      if (p.hold > 10 && p.hold % 6 === 0) {
+        const ahead = laneClear(p.x, p.y, p.x + dir * 100, p.y, p.team, true);
+        const opt = bestPassOption(p);
+        const forward = opt && (opt.m.x - p.x) * dir > 40;
+        if (opt && ((forward && opt.score > (ahead < 45 ? 1.1 : 1.6)) || (pressure < 36 && opt.score > 0.5) || p.hold > 150)) return passTo(p, opt.m, opt.lob);
+      }
       let ty = MIDY + (p.y - MIDY) * 0.6;
       // 前にいる相手を、横によけて進む
       let opp = null, od = 1e9;
@@ -482,20 +666,6 @@
       seek(p, p.x + dir * 120, ty, sp);
       const n = Math.hypot(p.tvx, p.tvy) || 1;
       p.fx = p.tvx / n; p.fy = p.tvy / n;
-
-      const inFront = Math.abs(p.y - MIDY) < 170;
-      if (inFront && (distGoal < 170 || (distGoal < ENEMY.shootRange && rnd() < 0.025))) {
-        const ty2 = MIDY + (rnd() < 0.5 ? -1 : 1) * GOAL_HALF * (0.35 + rnd() * 0.55);
-        p.fx = dir; p.fy = 0;
-        kick(p, gx + dir * 20 - p.x, ty2 - p.y, 8 + rnd() * 3, 1 + rnd() * 2);
-        SFX.shoot(0.5);
-        return;
-      }
-      const pressure = nearestOpponentDist(p);
-      if (p.hold > 20 && pressure < 34 && rnd() < 0.06) {
-        const m = choosePassTarget(p, dir, 0, -0.3);
-        if (m) passTo(p, m, dist(p, m) > 240);
-      }
     }
 
     function stepKeeper(p) {
@@ -507,8 +677,8 @@
         p.hold++;
         const opponentsBack = fieldOf(1 - p.team).every((q) => (q.x - MIDX) * attackDir(p.team) > -4);
         if (p.hold > KEEPER_HOLD_MIN && (opponentsBack || p.hold > KEEPER_HOLD_MAX)) {
-          const m = choosePassTarget(p, attackDir(p.team), 0, -0.2);
-          if (m) passTo(p, m, true);
+          const opt = bestPassOption(p);
+          if (opt) passTo(p, opt.m, opt.lob || dist(p, opt.m) > 200);
           else { kick(p, attackDir(p.team), 0, 9, 3); SFX.pass(); }
         }
         return;
@@ -525,11 +695,14 @@
       // ペナルティエリアのこぼれ球には飛び出す
       const inBox = Math.abs(b.x - ownGoalX(p.team)) < 150 && Math.abs(b.y - MIDY) < 130;
       if (!b.owner && inBox && dist(p, b) < 90 && b.z < BAR_Z) return seek(p, b.x, b.y, 2.4);
-      seek(p, homeX, ty, 2.4);
+      // シュートに反応して横へ動くときは少し遅い（すみへの速いシュートは届かないことがある）
+      seek(p, homeX, ty, towardGoal ? KEEPER_DIVE_SPEED : 2.4);
     }
 
     function movePlayer(p) {
       if (p.kickCd > 0) p.kickCd--;
+      if (p.airCd > 0) p.airCd--;
+      if (p.act && --p.act.t <= 0) p.act = null;
       // スタミナ: ダッシュ中は減り、走っていなければ少しずつ戻る
       if (p !== M.controlled) p.boost = Math.max(0, p.boost - 0.05);
       if (p.boost > 0.05) {
@@ -755,6 +928,10 @@
     // 効果音（定番は kit.sfx、このゲーム固有の音だけ tone / noise で作る）
     // ================================================================
     const SFX = {
+      airStrike(header) {
+        if (header) kit.sfx.tone({ freq: 520, to: 300, dur: 0.07, gain: 0.09, type: "triangle" });
+        else { kit.sfx.noise({ dur: 0.1, gain: 0.2, filterFrom: 3000, filterTo: 400 }); kit.sfx.tone({ freq: 300, to: 120, dur: 0.08, gain: 0.08 }); }
+      },
       longShot() {
         kit.sfx.noise({ dur: 0.22, gain: 0.26, filterFrom: 3200, filterTo: 300 });
         kit.sfx.tone({ freq: 180, to: 900, dur: 0.3, gain: 0.08, type: "sawtooth" });
@@ -807,7 +984,7 @@
         playing: "キックオフ！ 2分で相手より多く点を取れば勝ち",
       },
       onStart: () => { clearPending(); newMatch(); },
-      onInputReset: () => { if (M) { M.charge = -1; M.passCharge = -1; for (const p of M.players) p.boost = 0; } clearPending(); },
+      onInputReset: () => { if (M) { M.charge = -1; M.passCharge = -1; M.strikeBuf = 0; for (const p of M.players) p.boost = 0; } clearPending(); },
       // PC: C キーの連打でダッシュ（押しっぱなしの自動リピートは数えない）
       onKeyDown: (e) => { if (e.code === "KeyC" && !e.repeat) pending.dashTaps++; },
       update: (k) => {
@@ -944,15 +1121,24 @@
         drawHead(ctx, p, k, x - dir * 12, y - 8, 22);
         return;
       }
+      // ヘディングは跳ぶ、ボレーは足を振り上げる
+      const jump = p.act && p.act.kind === "head" ? Math.round(Math.sin((p.act.t / 16) * Math.PI) * 12) : 0;
+      const by = y - jump;
       const step = Math.sin(p.anim) * 3;
       ctx.fillStyle = "#f4f4f4";
-      ctx.fillRect(x - 5, y - 6 + Math.max(0, step), 3, 7 - Math.max(0, step));
-      ctx.fillRect(x + 2, y - 6 + Math.max(0, -step), 3, 7 - Math.max(0, -step));
+      if (p.act && p.act.kind === "volley") {
+        const side = p.fy >= 0 ? 1 : -1;
+        ctx.fillRect(x - 5, by - 6, 3, 7);
+        ctx.fillRect(x + (side > 0 ? 4 : -13), by - 12, 9, 3);
+      } else {
+        ctx.fillRect(x - 5, by - 6 + Math.max(0, step), 3, 7 - Math.max(0, step));
+        ctx.fillRect(x + 2, by - 6 + Math.max(0, -step), 3, 7 - Math.max(0, -step));
+      }
       ctx.fillStyle = shirt;
-      ctx.fillRect(x - 7, y - 17, 14, 12);
+      ctx.fillRect(x - 7, by - 17, 14, 12);
       ctx.fillStyle = "rgba(0,0,0,0.25)";
-      ctx.fillRect(x - 7, y - 7, 14, 2);
-      drawHead(ctx, p, k, x, y - 26, 26);
+      ctx.fillRect(x - 7, by - 7, 14, 2);
+      drawHead(ctx, p, k, x, by - 26, 26);
     }
 
     function drawHead(ctx, p, k, x, y, size) {
@@ -1145,6 +1331,11 @@
         }
         ctx.fillStyle = c.magenta;
         ctx.beginPath(); ctx.moveTo(x - 6, y); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 7); ctx.fill();
+        // 浮き球が近いときは「A」で直接蹴れることを知らせる
+        if (!b.owner && b.z > 3 && dist(cp, b) < 80 && k.retro.blinkOn(8)) {
+          ctx.save(); ctx.font = k.retro.font(9); ctx.textAlign = "center"; ctx.fillStyle = c.gold;
+          ctx.fillText(b.z > HEAD_Z ? "A:HEAD" : "A:VOLLEY", x, y - 16); ctx.restore();
+        }
         if (M.charge >= 0) {
           const r = Math.min(1, M.charge / 30);
           ctx.fillStyle = "rgba(4,6,12,0.7)"; ctx.fillRect(x - 16, y - 10, 32, 5);

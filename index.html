@@ -26,7 +26,8 @@
       <li>ボールを持っているとき: A でシュート（押し続けると強いシュート）、B でパス（向いている方の味方へ）</li>
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（ボールに近い選手に自動でも切り替わる）</li>
       <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
-      <li>PC: 矢印 / WASD で移動 ・ X が A ・ Z が B ・ P 一時停止 ・ M 音</li>
+      <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を連打、PC は C キーを連打。連打するほど操作中の選手が速くなる</li>
+      <li>PC: 矢印 / WASD で移動 ・ X が A ・ Z が B ・ C 連打でダッシュ ・ P 一時停止 ・ M 音</li>
       <li>姉妹作: <a href="https://sakuya.naoblock.com/">咲耶スクランブル</a> / <a href="https://rally.naoblock.jp/">咲耶Nounラリー</a> / <a href="https://jumpbug.naoblock.jp/">咲耶ジャンプバグ</a></li>
     </ul>
   </details>
@@ -77,7 +78,10 @@
     // （あとでオンライン対戦を足すとき、相手のコマンドを同じ形で渡せるようにしておく）
     // ================================================================
     let M = null;
-    const pending = { aPressed: false, aReleased: false, bPressed: false };
+    const pending = { aPressed: false, aReleased: false, bPressed: false, dashTaps: 0 };
+    const clearPending = () => { pending.aPressed = pending.aReleased = pending.bPressed = false; pending.dashTaps = 0; };
+    // ダッシュ: 連打するほど操作中の選手が速くなる（1回で +DASH.tap、毎フレーム DASH.decay ずつ減る）
+    const DASH = { tap: 0.22, decay: 0.02, run: 0.5, dribble: 0.25 };
 
     function makePlayer(team, idx, isGK, ch) {
       return { team, idx, isGK, ch, x: 0, y: 0, vx: 0, vy: 0, fx: attackDir(team), fy: 0,
@@ -98,7 +102,7 @@
         ball: { x: MIDX, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, lastTeam: 0, passTarget: null, gkIgnore: 0 },
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
-        cam: CAM_MIN, ended: false, flash: 0,
+        cam: CAM_MIN, ended: false, flash: 0, boost: 0,
       };
       kickoff(0);
     }
@@ -267,18 +271,19 @@
       const c = M.controlled;
       const b = M.ball;
       if (!c) return;
+      M.boost = clamp(M.boost + (cmd.dashTaps || 0) * DASH.tap - DASH.decay, 0, 1);
       let ax = cmd.ax, ay = cmd.ay;
       const n = Math.hypot(ax, ay);
       if (n > 1) { ax /= n; ay /= n; }
       if (c.stun === 0 && c.slide === 0) {
-        const sp = b.owner === c ? 2.1 : 2.35;
+        const sp = b.owner === c ? 2.1 * (1 + DASH.dribble * M.boost) : 2.35 * (1 + DASH.run * M.boost);
         if (n > 0.08) {
           c.tvx = ax * sp; c.tvy = ay * sp;
           const fn = Math.hypot(ax, ay);
           c.fx = ax / fn; c.fy = ay / fn;
         } else if (b.passTarget === c && !b.owner) {
           // 入力が無いときは、自分に来たパスを迎えに行く
-          seek(c, b.x + b.vx * 6, b.y + b.vy * 6, 2.35);
+          seek(c, b.x + b.vx * 6, b.y + b.vy * 6, sp);
         } else { c.tvx = 0; c.tvy = 0; }
       }
 
@@ -650,16 +655,18 @@
         ],
       },
       help: {
-        mobile: "左のスティックで移動、A でシュート（長押しで強く）・スライディング、B でパス・選手の切り替え",
-        pc: "矢印 / WASD で移動、X でシュート・スライディング、Z でパス・切り替え（P で一時停止）",
+        mobile: "左のスティックで移動、右側の空いたところを連打でダッシュ。A でシュート・スライディング、B でパス・切り替え",
+        pc: "矢印 / WASD で移動、C 連打でダッシュ、X でシュート・スライディング、Z でパス・切り替え（P で一時停止）",
         playing: "キックオフ！ 2分で相手より多く点を取れば勝ち",
       },
-      onStart: () => { pending.aPressed = pending.aReleased = pending.bPressed = false; newMatch(); },
-      onInputReset: () => { if (M) M.charge = -1; pending.aPressed = pending.aReleased = pending.bPressed = false; },
+      onStart: () => { clearPending(); newMatch(); },
+      onInputReset: () => { if (M) { M.charge = -1; M.boost = 0; } clearPending(); },
+      // PC: C キーの連打でダッシュ（押しっぱなしの自動リピートは数えない）
+      onKeyDown: (e) => { if (e.code === "KeyC" && !e.repeat) pending.dashTaps++; },
       update: (k) => {
         const a = k.input.axis();
         const cmd = { ax: -a.y, ay: a.x, aHeld: !!k.input.buttons.shoot, ...pending };
-        pending.aPressed = pending.aReleased = pending.bPressed = false;
+        clearPending();
         stepMatch(cmd);
       },
       render: (ctx, k) => render(ctx, k),
@@ -934,6 +941,20 @@
       const cp = M.controlled;
       if (cp) {
         const x = toSX(cp.y), y = toSY(cp.x, cam) - 48;
+        if (M.boost > 0.05) {
+          // ダッシュ中: 足もとの土ぼこりと、目印の横のゲージ
+          const vx = cp.vy, vy = -cp.vx, sp = Math.hypot(vx, vy);
+          if (sp > 0.5) {
+            ctx.fillStyle = `rgba(230,220,190,${0.25 + 0.5 * M.boost})`;
+            for (let i = 1; i <= 3; i++) {
+              const r = 2 + i + ((renderFrame + i) % 3);
+              ctx.beginPath(); ctx.arc(x - (vx / sp) * i * 7, y + 48 - (vy / sp) * i * 7, r, 0, Math.PI * 2); ctx.fill();
+            }
+          }
+          ctx.fillStyle = "rgba(4,6,12,0.7)"; ctx.fillRect(x + 10, y - 6, 5, 18);
+          ctx.fillStyle = M.boost > 0.8 ? c.magenta : "#3bd1ff";
+          ctx.fillRect(x + 10, y + 12 - 18 * M.boost, 5, 18 * M.boost);
+        }
         ctx.fillStyle = c.magenta;
         ctx.beginPath(); ctx.moveTo(x - 6, y); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 7); ctx.fill();
         if (M.charge >= 0) {
@@ -970,6 +991,16 @@
         }
       }
     }
+
+    // スマホ: 画面の右側（A・B・⚙ などのボタンの上は除く）を叩いた回数をダッシュに数える。
+    // kit の rightHalfButton は A・B のどちらかを押す仕組みで、A・B 配置では3つ目のボタンを置けないため、
+    // 試作ではここで数える（遊びが決まったら kit に「連打の入力」として足す）
+    document.addEventListener("pointerdown", (e) => {
+      if (kit.phase !== "playing" || kit.paused || (kit.settings && kit.settings.isOpen)) return;
+      if (e.pointerType === "mouse" || e.clientX < window.innerWidth / 2) return;
+      if (e.target && e.target.closest && e.target.closest("button, input, a, .sk-leaderboard, .sk-settings")) return;
+      pending.dashTaps++;
+    }, { passive: true });
 
     // 遊び方はランキングより上に出す
     const board = document.querySelector(".sk-leaderboard");

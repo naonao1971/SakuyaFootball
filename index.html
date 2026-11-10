@@ -26,7 +26,7 @@
       <li>ボールを持っているとき: A でシュート（押し続けると強いシュート）、B でパス（向いている方の味方へ）</li>
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（ボールに近い選手に自動でも切り替わる）</li>
       <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
-      <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を連打、PC は C キーを連打。連打するほど操作中の選手が速くなる</li>
+      <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を連打、PC は C キーを連打。連打するほど操作中の選手が速くなる。走りすぎるとスタミナが切れて、その選手はしばらくダッシュできない（左のパネルのバー）</li>
       <li>PC: 矢印 / WASD で移動 ・ X が A ・ Z が B ・ C 連打でダッシュ ・ P 一時停止 ・ M 音</li>
       <li>姉妹作: <a href="https://sakuya.naoblock.com/">咲耶スクランブル</a> / <a href="https://rally.naoblock.jp/">咲耶Nounラリー</a> / <a href="https://jumpbug.naoblock.jp/">咲耶ジャンプバグ</a></li>
     </ul>
@@ -80,12 +80,14 @@
     let M = null;
     const pending = { aPressed: false, aReleased: false, bPressed: false, dashTaps: 0 };
     const clearPending = () => { pending.aPressed = pending.aReleased = pending.bPressed = false; pending.dashTaps = 0; };
-    // ダッシュ: 連打するほど操作中の選手が速くなる（1回で +DASH.tap、毎フレーム DASH.decay ずつ減る）
-    const DASH = { tap: 0.22, decay: 0.02, run: 0.5, dribble: 0.25 };
+    // ダッシュ: 連打するほど操作中の選手が速くなる（1回で +tap、毎フレーム decay ずつ減る。1 から 0 まで約2秒）。
+    // 速さは走るとき最大 (1 + run) 倍、ドリブル中は (1 + dribble) 倍。
+    // 選手ごとのスタミナ（0〜1）がダッシュ中に減り、0 になると「バテ」て、recoverTo まで回復するまでダッシュできない
+    const DASH = { tap: 0.3, decay: 0.008, run: 0.9, dribble: 0.5, drain: 0.0055, recover: 0.0022, recoverTo: 0.6 };
 
     function makePlayer(team, idx, isGK, ch) {
       return { team, idx, isGK, ch, x: 0, y: 0, vx: 0, vy: 0, fx: attackDir(team), fy: 0,
-        stun: 0, slide: 0, kickCd: 0, hold: 0, anim: 0 };
+        stun: 0, slide: 0, kickCd: 0, hold: 0, anim: 0, boost: 0, stamina: 1, tired: false };
     }
 
     function newMatch() {
@@ -102,7 +104,7 @@
         ball: { x: MIDX, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, lastTeam: 0, passTarget: null, gkIgnore: 0 },
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
-        cam: CAM_MIN, ended: false, flash: 0, boost: 0,
+        cam: CAM_MIN, ended: false, flash: 0,
       };
       kickoff(0);
     }
@@ -271,12 +273,12 @@
       const c = M.controlled;
       const b = M.ball;
       if (!c) return;
-      M.boost = clamp(M.boost + (cmd.dashTaps || 0) * DASH.tap - DASH.decay, 0, 1);
+      c.boost = clamp(c.boost + (c.tired ? 0 : (cmd.dashTaps || 0) * DASH.tap) - DASH.decay, 0, 1);
       let ax = cmd.ax, ay = cmd.ay;
       const n = Math.hypot(ax, ay);
       if (n > 1) { ax /= n; ay /= n; }
       if (c.stun === 0 && c.slide === 0) {
-        const sp = b.owner === c ? 2.1 * (1 + DASH.dribble * M.boost) : 2.35 * (1 + DASH.run * M.boost);
+        const sp = b.owner === c ? 2.1 * (1 + DASH.dribble * c.boost) : 2.35 * (1 + DASH.run * c.boost);
         if (n > 0.08) {
           c.tvx = ax * sp; c.tvy = ay * sp;
           const fn = Math.hypot(ax, ay);
@@ -420,6 +422,15 @@
 
     function movePlayer(p) {
       if (p.kickCd > 0) p.kickCd--;
+      // スタミナ: ダッシュ中は減り、走っていなければ少しずつ戻る
+      if (p !== M.controlled) p.boost = Math.max(0, p.boost - 0.05);
+      if (p.boost > 0.05) {
+        p.stamina -= DASH.drain * p.boost;
+        if (p.stamina <= 0) { p.stamina = 0; p.tired = true; p.boost = 0; if (p.team === 0) SFX.tired(); }
+      } else {
+        p.stamina = Math.min(1, p.stamina + DASH.recover);
+        if (p.tired && p.stamina >= DASH.recoverTo) p.tired = false;
+      }
       if (p.stun > 0) {
         p.stun--; p.vx *= 0.8; p.vy *= 0.8;
       } else if (p.slide > 0) {
@@ -621,6 +632,7 @@
       steal() { kit.sfx.tone({ freq: 520, to: 780, dur: 0.06, gain: 0.07 }); },
       catch() { kit.sfx.tone({ freq: 200, dur: 0.06, gain: 0.08, type: "triangle" }); },
       switch() { kit.sfx.tone({ freq: 880, dur: 0.03, gain: 0.05 }); },
+      tired() { kit.sfx.tone({ freq: 420, to: 160, dur: 0.25, gain: 0.07, type: "triangle" }); },
       whistle(long) {
         const n = long ? 3 : 1;
         for (let i = 0; i < n; i++) kit.sfx.tone({ freq: 2100, to: 2000, dur: long && i === 2 ? 0.5 : 0.16, gain: 0.07, type: "triangle", delay: i * 0.22 });
@@ -660,7 +672,7 @@
         playing: "キックオフ！ 2分で相手より多く点を取れば勝ち",
       },
       onStart: () => { clearPending(); newMatch(); },
-      onInputReset: () => { if (M) { M.charge = -1; M.boost = 0; } clearPending(); },
+      onInputReset: () => { if (M) { M.charge = -1; for (const p of M.players) p.boost = 0; } clearPending(); },
       // PC: C キーの連打でダッシュ（押しっぱなしの自動リピートは数えない）
       onKeyDown: (e) => { if (e.code === "KeyC" && !e.repeat) pending.dashTaps++; },
       update: (k) => {
@@ -885,15 +897,27 @@
       mine.forEach((p, i) => {
         const col = i % 3, row = Math.floor(i / 3);
         const n = row === 0 ? 3 : 2;
-        const x = cx + (col - (n - 1) / 2) * 62, y = 276 + row * 66;
+        const x = cx + (col - (n - 1) / 2) * 62, y = 276 + row * 84;
         ctx.fillStyle = "rgba(4,6,12,0.7)"; ctx.fillRect(x - 24, y - 24, 48, 48);
         k.cnp.draw(ctx, p.ch, x, y, 44);
         ctx.lineWidth = 2;
         ctx.strokeStyle = p === M.controlled ? c.magenta : p.isGK ? SHIRT[0].gk : k.retro.alpha(c.gold, 0.35);
         ctx.strokeRect(x - 23, y - 23, 46, 46);
-        ctx.fillStyle = c.dim; ctx.fillText(p.isGK ? "GK" : "", x, y + 36);
+        if (p.isGK) { ctx.fillStyle = c.dim; ctx.fillText("GK", x, y + 36); }
+        else {
+          // スタミナ
+          ctx.fillStyle = "rgba(4,6,12,0.8)"; ctx.fillRect(x - 23, y + 28, 46, 6);
+          ctx.fillStyle = staminaColor(p, k); ctx.fillRect(x - 23, y + 28, 46 * p.stamina, 6);
+          if (p.tired) { ctx.fillStyle = c.danger; ctx.fillText("TIRED", x, y + 46); }
+        }
       });
       ctx.restore();
+    }
+
+    function staminaColor(p, k) {
+      const c = k.retro.colors;
+      if (p.tired) return k.retro.blinkOn(10) ? c.danger : k.retro.alpha(c.danger, 0.4);
+      return p.stamina > 0.5 ? "#3bd16f" : p.stamina > 0.25 ? c.gold : c.danger;
     }
 
     let renderFrame = 0;
@@ -941,19 +965,30 @@
       const cp = M.controlled;
       if (cp) {
         const x = toSX(cp.y), y = toSY(cp.x, cam) - 48;
-        if (M.boost > 0.05) {
-          // ダッシュ中: 足もとの土ぼこりと、目印の横のゲージ
+        if (cp.boost > 0.05) {
+          // ダッシュ中: 足もとの土ぼこりと、目印の右に速さのゲージ
           const vx = cp.vy, vy = -cp.vx, sp = Math.hypot(vx, vy);
           if (sp > 0.5) {
-            ctx.fillStyle = `rgba(230,220,190,${0.25 + 0.5 * M.boost})`;
+            ctx.fillStyle = `rgba(230,220,190,${0.25 + 0.5 * cp.boost})`;
             for (let i = 1; i <= 3; i++) {
               const r = 2 + i + ((renderFrame + i) % 3);
               ctx.beginPath(); ctx.arc(x - (vx / sp) * i * 7, y + 48 - (vy / sp) * i * 7, r, 0, Math.PI * 2); ctx.fill();
             }
           }
           ctx.fillStyle = "rgba(4,6,12,0.7)"; ctx.fillRect(x + 10, y - 6, 5, 18);
-          ctx.fillStyle = M.boost > 0.8 ? c.magenta : "#3bd1ff";
-          ctx.fillRect(x + 10, y + 12 - 18 * M.boost, 5, 18 * M.boost);
+          ctx.fillStyle = cp.boost > 0.8 ? c.magenta : "#3bd1ff";
+          ctx.fillRect(x + 10, y + 12 - 18 * cp.boost, 5, 18 * cp.boost);
+        }
+        // 目印の左にスタミナ。バテている間は赤く点滅し、頭の上に汗
+        if (cp.stamina < 0.999 || cp.tired) {
+          ctx.fillStyle = "rgba(4,6,12,0.7)"; ctx.fillRect(x - 15, y - 6, 5, 18);
+          ctx.fillStyle = staminaColor(cp, k);
+          ctx.fillRect(x - 15, y + 12 - 18 * cp.stamina, 5, 18 * cp.stamina);
+        }
+        if (cp.tired) {
+          ctx.fillStyle = "#7fd4ff";
+          const t = (renderFrame >> 3) & 1;
+          ctx.fillRect(x - 12, y + 14 + t, 2, 4); ctx.fillRect(x + 11, y + 12 + (1 - t), 2, 4);
         }
         ctx.fillStyle = c.magenta;
         ctx.beginPath(); ctx.moveTo(x - 6, y); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 7); ctx.fill();

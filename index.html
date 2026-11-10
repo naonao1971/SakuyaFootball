@@ -23,7 +23,7 @@
     <summary>遊び方</summary>
     <ul>
       <li>CNP チーム（青）を操って、忍者チーム（赤）と2分間の試合。勝てばクリア</li>
-      <li>ボールを持っているとき: A でシュート（押し続けると強いシュート）、B でパス（向いている方の味方の足元へ。長押ししてから離すと浮き玉）</li>
+      <li>ボールを持っているとき: A でシュート（押し続けると強いシュート）、B でパス（向いている方の味方の足元へ。長押ししてから離すと浮き玉）、A と B を同時に押すとロングシュート（どこからでもゴールへ。左右を入れるとすみを狙う）</li>
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（ボールに近い選手に自動でも切り替わる）</li>
       <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
       <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を連打、PC は C キーを連打。連打するほど操作中の選手が速くなる。走りすぎるとスタミナが切れて、その選手はしばらくダッシュできない（左のパネルのバー）</li>
@@ -70,6 +70,9 @@
     // グラウンダーは味方の足元に、着いたときに PASS_ARRIVE くらいの速さが残る強さで蹴る（転がりの減速は1px で 0.028）
     // パスの途中のボールは、速さが INTERCEPT_SPEED より速い間は相手が足で止められない（スライディングなら止められる）
     const LOB_HOLD = 12, PASS_ARRIVE = 3, INTERCEPT_SPEED = 6.5, GRAVITY = 0.25;
+    // ロングシュート: ボールを持って A と B を COMBO_WINDOW フレーム以内に続けて押す。
+    // ゴールの線を LONG_Z の高さで越える弧を計算して蹴る。遠いほどねらいがぶれる
+    const COMBO_WINDOW = 8, LONG_SPEED = 12, LONG_Z = 22;
     const RETREAT_MARGIN = 20;                 // キーパーが持ったとき、相手はハーフラインからこれだけ自陣側へ下がる
     const KEEPER_HOLD_MIN = 40, KEEPER_HOLD_MAX = 170; // キーパーがボールを持つ長さ（フレーム）
     const keeperHolding = (team) => { const o = M.ball.owner; return !!o && o.isGK && o.team === team; };
@@ -111,7 +114,7 @@
         ball: { x: MIDX, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, lastTeam: 0, passTarget: null, gkIgnore: 0 },
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
-        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1,
+        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, lastA: -99, lastB: -99, longShot: 0,
       };
       kickoff(0);
     }
@@ -231,6 +234,26 @@
       SFX.pass(lob);
     }
 
+    // ロングシュート: ゴールの枠（横の入力で左右のすみ）へ、ゴールラインを LONG_Z の高さで越える弧で蹴る
+    function longShot(p, aimY) {
+      const dir = attackDir(p.team);
+      const gx = oppGoalX(p.team);
+      const d0 = Math.abs(gx - p.x);
+      const spread = Math.min(1, d0 / 700) * GOAL_HALF * 0.7; // 遠いほどぶれる
+      const tx = gx + dir * 10;
+      const ty = MIDY + aimY * GOAL_HALF * 0.75 + (rnd() * 2 - 1) * spread;
+      const d = Math.hypot(tx - p.x, ty - p.y);
+      const f = 0.993;
+      const v = Math.max(LONG_SPEED, (d * (1 - f)) / 0.6);         // 遠すぎても届く速さ
+      const n = Math.log(1 - (d * (1 - f)) / v) / Math.log(f);    // ゴールに着くまでのフレーム数
+      // ゴールラインを越える高さも、遠いほどぶれる（クロスバーを越えて外れることもある）
+      const zt = LONG_Z + (rnd() * 2 - 1) * (6 + 10 * Math.min(1, d0 / 700));
+      const vz = (zt + (GRAVITY * n * n) / 2) / n;
+      kick(p, tx - p.x, ty - p.y, v, vz);
+      M.longShot = 50;
+      SFX.longShot();
+    }
+
     // 浮き玉: (tx, ty) に落ちるように、高さと横の速さを決めて蹴る。落ちる場所を ball.land に覚える
     function lobTo(p, tx, ty) {
       const d = Math.hypot(tx - p.x, ty - p.y);
@@ -286,6 +309,7 @@
         return;
       }
       M.timer++;
+      if (M.longShot > 0) M.longShot--;
       if (M.timer >= MATCH_FRAMES) {
         freeze(150, "fulltime", "FULL TIME");
         SFX.whistle(true);
@@ -331,6 +355,16 @@
         } else { c.tvx = 0; c.tvy = 0; }
       }
 
+      // A と B を続けて押したら（どちらが先でもよい）ロングシュート
+      if (cmd.aPressed) M.lastA = M.timer;
+      if (cmd.bPressed) M.lastB = M.timer;
+      const combo = (cmd.aPressed && (cmd.bHeld || cmd.bPressed) && M.timer - M.lastB <= COMBO_WINDOW) ||
+                    (cmd.bPressed && (cmd.aHeld || cmd.aPressed) && M.timer - M.lastA <= COMBO_WINDOW);
+      if (combo && b.owner === c) {
+        longShot(c, cmd.ay);
+        M.charge = -1; M.passCharge = -1;
+        return;
+      }
       if (cmd.aPressed) {
         if (b.owner === c) M.charge = 0;
         else startSlide(c);
@@ -582,9 +616,15 @@
           if (g.stun > 0 || b.z > BAR_Z + 6 || dist(g, b) > 22) continue;
           if (b.lastTeam === t && b.vx * attackDir(t) > 0) continue; // 味方のバックパスは手を使わず普通に拾う
           const sp = Math.hypot(b.vx, b.vy);
-          const chance = sp < 6 ? 0.97 : sp < 9.5 ? 0.78 : 0.5;
+          let chance = sp < 6 ? 0.97 : sp < 9.5 ? 0.78 : 0.5;
+          // 上から落ちてくるボールは取りにくい（高いほど）
+          const dropping = b.z > 12 && b.vz < 0;
+          if (dropping) chance *= b.z > 24 ? 0.45 : 0.75;
           if (rnd() < chance) { giveBall(g); SFX.catch(); }
-          else {
+          else if (dropping && b.z > 24) {
+            // 指先をかすめて、そのままゴールへ
+            b.gkIgnore = 30; b.vx *= 0.9; b.vy *= 0.9;
+          } else {
             b.vx *= -0.35; b.vy += (rnd() - 0.5) * 5; b.vz = 2.2; b.gkIgnore = 24;
             b.lastTeam = t; SFX.bounce();
           }
@@ -715,6 +755,10 @@
     // 効果音（定番は kit.sfx、このゲーム固有の音だけ tone / noise で作る）
     // ================================================================
     const SFX = {
+      longShot() {
+        kit.sfx.noise({ dur: 0.22, gain: 0.26, filterFrom: 3200, filterTo: 300 });
+        kit.sfx.tone({ freq: 180, to: 900, dur: 0.3, gain: 0.08, type: "sawtooth" });
+      },
       shoot(t) { kit.sfx.noise({ dur: 0.08 + t * 0.08, gain: 0.16 + t * 0.1, filterFrom: 2600, filterTo: 300 }); kit.sfx.tone({ freq: 220 + t * 200, to: 90, dur: 0.08, gain: 0.08 }); },
       pass(lob) { kit.sfx.tone(lob ? { freq: 260, to: 520, dur: 0.12, gain: 0.08, type: "triangle" } : { freq: 330, to: 180, dur: 0.05, gain: 0.08 }); },
       bounce() { kit.sfx.tone({ freq: 160, to: 110, dur: 0.04, gain: 0.05, type: "triangle" }); },
@@ -758,8 +802,8 @@
         ],
       },
       help: {
-        mobile: "左のスティックで移動、右側の空いたところを連打でダッシュ。A でシュート・スライディング、B でパス（長押しで浮き玉）・切り替え",
-        pc: "矢印 / WASD で移動、C 連打でダッシュ、X でシュート・スライディング、Z でパス（長押しで浮き玉）・切り替え（P で一時停止）",
+        mobile: "左のスティックで移動、右側の空いたところを連打でダッシュ。A でシュート・スライディング、B でパス（長押しで浮き玉）・切り替え、A＋B でロングシュート",
+        pc: "矢印 / WASD で移動、C 連打でダッシュ、X でシュート・スライディング、Z でパス（長押しで浮き玉）・切り替え、X＋Z でロングシュート（P で一時停止）",
         playing: "キックオフ！ 2分で相手より多く点を取れば勝ち",
       },
       onStart: () => { clearPending(); newMatch(); },
@@ -1051,6 +1095,18 @@
       }
       if (!ballDrawn) drawBall(ctx, b, cam);
       drawGoal(ctx, cam, 0);
+      // ロングシュートの文字と、ボールの残像
+      if (M.longShot > 0 && !b.owner) {
+        const bx = toSX(b.y), by = toSY(b.x, cam) - b.z - 4;
+        ctx.fillStyle = k.retro.alpha(c.gold, 0.35);
+        for (let i = 1; i <= 4; i++) {
+          ctx.beginPath(); ctx.arc(bx - b.vy * i * 1.6, by + b.vx * i * 1.6 + b.vz * i * 1.6, 4.5 - i * 0.6, 0, Math.PI * 2); ctx.fill();
+        }
+        if (k.retro.blinkOn(6)) {
+          ctx.save(); ctx.font = k.retro.font(14); ctx.textAlign = "center"; ctx.fillStyle = c.gold;
+          ctx.fillText("LONG SHOT!", W / 2, 44); ctx.restore();
+        }
+      }
       // 浮き玉の落ちる場所
       if (b.land && b.z > 0 && !b.owner) {
         const lx = toSX(b.land.y), ly = toSY(b.land.x, cam);

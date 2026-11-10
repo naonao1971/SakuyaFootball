@@ -66,6 +66,9 @@
     // 4人のフィールドプレーヤーの基本の位置（自陣ゴールからの割合）。DF・左右の MF・FW のひし形
     const FORMATION = [{ x: 0.2, y: 0.5 }, { x: 0.42, y: 0.24 }, { x: 0.42, y: 0.76 }, { x: 0.62, y: 0.5 }];
 
+    const RETREAT_MARGIN = 20;                 // キーパーが持ったとき、相手はハーフラインからこれだけ自陣側へ下がる
+    const KEEPER_HOLD_MIN = 40, KEEPER_HOLD_MAX = 170; // キーパーがボールを持つ長さ（フレーム）
+    const keeperHolding = (team) => { const o = M.ball.owner; return !!o && o.isGK && o.team === team; };
     const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
     const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
     const attackDir = (team) => (team === 0 ? 1 : -1);
@@ -273,6 +276,12 @@
       const c = M.controlled;
       const b = M.ball;
       if (!c) return;
+      if (keeperHolding(1 - c.team)) {
+        // 相手のキーパーが持っている間は、操作中の選手も自動で下がる（ボタンは効かない）
+        M.charge = -1;
+        if (c.stun === 0 && c.slide === 0) retreat(c);
+        return;
+      }
       c.boost = clamp(c.boost + (c.tired ? 0 : (cmd.dashTaps || 0) * DASH.tap) - DASH.decay, 0, 1);
       let ax = cmd.ax, ay = cmd.ay;
       const n = Math.hypot(ax, ay);
@@ -339,6 +348,7 @@
       if (b.owner === p) return stepOwnerAI(p);
       const sp = p.team === 1 ? ENEMY.speed : 2.1;
       const ours = b.owner && b.owner.team === p.team;
+      if (keeperHolding(1 - p.team)) return retreat(p);
       if (b.passTarget === p && !b.owner) return seek(p, b.x + b.vx * 6, b.y + b.vy * 6, sp + 0.2);
       if (p.team === 1 && !ours && M.chaser[1] === p) {
         const tgt = b.owner || b;
@@ -355,6 +365,15 @@
       if (!b.owner && b.z < 20 && dist(p, b) < 44) return seek(p, b.x, b.y, sp);
       const s = formationSpot(p, ours);
       seek(p, s.x, s.y, sp * 0.9);
+    }
+
+    // 相手のキーパーがボールを持ったら、自陣（ハーフラインの向こう）まで急いで下がる
+    function retreat(p) {
+      const s = formationSpot(p, false);
+      const x = p.team === 0 ? Math.min(s.x, MIDX - RETREAT_MARGIN) : Math.max(s.x, MIDX + RETREAT_MARGIN);
+      seek(p, x, s.y, (p.team === 1 ? ENEMY.speed : 2.1) * 1.8);
+      const n = Math.hypot(p.tvx, p.tvy);
+      if (n > 0.3) { p.fx = p.tvx / n; p.fy = p.tvy / n; }
     }
 
     function stepOwnerAI(p) {
@@ -396,9 +415,11 @@
       const b = M.ball;
       const homeX = ownGoalX(p.team) + attackDir(p.team) * 16;
       if (b.owner === p) {
-        // 少し持ってから、前の空いている味方へ大きく蹴る
+        // 相手がハーフラインまで下がるのを待ってから（長くても KEEPER_HOLD_MAX）、前の空いている味方へ大きく蹴る
         p.tvx = p.tvy = 0;
-        if (++p.hold > 50) {
+        p.hold++;
+        const opponentsBack = fieldOf(1 - p.team).every((q) => (q.x - MIDX) * attackDir(p.team) > -4);
+        if (p.hold > KEEPER_HOLD_MIN && (opponentsBack || p.hold > KEEPER_HOLD_MAX)) {
           const m = choosePassTarget(p, attackDir(p.team), 0, -0.2);
           if (m) passTo(p, m, true);
           else { kick(p, attackDir(p.team), 0, 9, 3); SFX.pass(); }
@@ -455,9 +476,11 @@
           const a = ps[i], c = ps[j];
           const dx = c.x - a.x, dy = c.y - a.y, d = Math.hypot(dx, dy);
           if (d > 0 && d < 13) {
+            // ボールを持ったキーパーは押されない（相手だけが押し返される）
+            const ka = a.isGK && M.ball.owner === a ? 0 : c.isGK && M.ball.owner === c ? 2 : 1;
             const push = (13 - d) * 0.5;
-            a.x -= (dx / d) * push; a.y -= (dy / d) * push;
-            c.x += (dx / d) * push; c.y += (dy / d) * push;
+            a.x -= (dx / d) * push * ka; a.y -= (dy / d) * push * ka;
+            c.x += (dx / d) * push * (2 - ka); c.y += (dy / d) * push * (2 - ka);
           }
         }
       }
@@ -468,6 +491,12 @@
       if (b.gkIgnore > 0) b.gkIgnore--;
       if (b.owner) {
         const o = b.owner;
+        if (o.isGK) {
+          // キーパーはゴールの前に立ち、ボールはいつも前（攻める向き）に持つ
+          const lim = ownGoalX(o.team) + attackDir(o.team) * 12;
+          o.x = o.team === 0 ? Math.max(o.x, lim) : Math.min(o.x, lim);
+          o.fx = attackDir(o.team); o.fy = 0;
+        }
         b.x = o.x + o.fx * 9; b.y = o.y + o.fy * 9 + 2;
         b.z = 0; b.vx = o.vx; b.vy = o.vy; b.vz = 0;
         return;

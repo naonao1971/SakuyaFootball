@@ -25,7 +25,7 @@
       <li>CNP チーム（青）を操って、忍者チーム（赤）と2分間の試合。勝てばクリア</li>
       <li>ボールを持っているとき: A でシュート（押し続けると強いシュート）、B でパス（向いている方の味方の足元へ。パス先の味方の足もとに水色の輪が出る。長押ししてから離すと浮き玉）、A と B を同時に押すとロングシュート（どこからでもゴールへ。左右を入れるとすみを狙う）</li>
       <li>浮き球: ボールが浮いて近くにあるときに A を押すと、高ければヘディング、低ければボレーで直接蹴る（ゴールの近くで前を向いていればシュート）</li>
-      <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（ボールに近い選手に自動でも切り替わる）</li>
+      <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（スティックを離すと、ボールに近い選手に自動でも切り替わる。走っている間は切り替わらない。切り替わった選手の足もとが光る）</li>
       <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
       <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を連打、PC は C キーを連打。連打するほど操作中の選手が速くなる。走りすぎるとスタミナが切れて、その選手はしばらくダッシュできない（左のパネルのバー）</li>
       <li>PC: 矢印 / WASD で移動 ・ X が A ・ Z が B ・ C 連打でダッシュ ・ P 一時停止 ・ M 音</li>
@@ -74,6 +74,9 @@
     // パス先の予告: ボールを持っている間、毎フレーム選ぶパス先を足もとの印で見せる。
     // 向きの細かいぶれで2人の間を行ったり来たりしないよう、今のパス先のコストを PASS_STICKY 倍にして少し有利にする
     // 今のパス先は、向きの範囲も少し広く（左右 60度 → 約 67度）残す
+    // 操作する選手の自動の切り替えは、スティックを離して AUTO_SWITCH_IDLE フレームたってから（走っている最中は切り替えない）。
+    // 切り替わったら、新しい選手の足もとを SWITCH_FLASH フレームのあいだ、輪で光らせる
+    const AUTO_SWITCH_IDLE = 8, SWITCH_FLASH = 20;
     const PASS_STICKY = 0.8, PASS_CONE = 0.5, PASS_CONE_STICKY = 0.38;
     // ロングシュート: ボールを持って A と B を COMBO_WINDOW フレーム以内に続けて押す。
     // ゴールの線を LONG_Z の高さで越える弧を計算して蹴る。遠いほどねらいがぶれる
@@ -125,7 +128,7 @@
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
         ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null, mood: "normal", moodT: 0 },
-        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, passPreview: null, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
+        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, passPreview: null, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
       };
       kickoff(0);
     }
@@ -159,8 +162,8 @@
       // 蹴る側の FW がボールを持つ
       const taker = fieldOf(team).find((p) => p.idx === 3);
       taker.x = MIDX - attackDir(team) * 10; taker.y = MIDY;
-      giveBall(taker);
-      M.controlled = team === 0 ? taker : nearestField(0, b);
+      giveBall(taker, false);
+      setControlled(team === 0 ? taker : nearestField(0, b), false);
       M.charge = -1;
       freeze(70, "kickoff", "KICK OFF");
       refJudge("kickoff");
@@ -170,11 +173,21 @@
       M.freeze = frames; M.freezeKind = kind; M.caption = caption;
     }
 
-    function giveBall(p) {
+    // 操作する選手を変える。どの理由で変わっても、ここを通して足もとを光らせる（sound: 切り替えの音を鳴らすか）
+    function setControlled(p, sound = true) {
+      if (!p || p === M.controlled) return;
+      M.controlled = p;
+      M.switchFlash = SWITCH_FLASH;
+      M.passPreview = null;
+      if (sound) SFX.switch();
+    }
+
+    // sound: 操作する選手が変わったときに切り替えの音を鳴らすか（キックオフ・スローインは笛が鳴るので鳴らさない）
+    function giveBall(p, sound = true) {
       const b = M.ball;
       b.owner = p; b.passTarget = null; b.z = 0; b.vz = 0; b.lastTeam = p.team;
       p.hold = 0;
-      if (p.team === 0 && !p.isGK) M.controlled = p;
+      if (p.team === 0 && !p.isGK) setControlled(p, sound); // ボールを奪った・拾った
     }
 
     function nearestField(team, pt, except) {
@@ -226,7 +239,7 @@
       if (lob) lobTo(p, tx, ty);
       else kick(p, tx - p.x, ty - p.y, clamp(PASS_ARRIVE + d * 0.028, 5, 13), 0);
       M.ball.passTarget = m;
-      if (m.team === 0) M.controlled = m;
+      if (m.team === 0) setControlled(m, false); // パスの受け手へ（パスの音とかぶるので切り替えの音は鳴らさない）
       SFX.pass(lob);
     }
 
@@ -301,6 +314,7 @@
     // ================================================================
     function stepMatch(cmd) {
       M.flash = Math.max(0, M.flash - 1);
+      if (M.switchFlash > 0) M.switchFlash--;
       stepRef();
       if (M.freeze > 0) {
         if (M.freezeKind === "goal") stepBall(); // ゴールネットに吸い込まれる余韻
@@ -338,6 +352,7 @@
       const c = M.controlled;
       const b = M.ball;
       if (!c) return;
+      M.stickIdle = Math.hypot(cmd.ax, cmd.ay) <= 0.08 ? M.stickIdle + 1 : 0;
       if (keeperHolding(1 - c.team)) {
         // 相手のキーパーが持っている間は、操作中の選手も自動で下がる（ボタンは効かない）
         M.charge = -1; M.passCharge = -1; M.passPreview = null;
@@ -394,7 +409,7 @@
         if (b.owner === c) M.passCharge = 0;
         else {
           const m = nearestField(0, b, c);
-          if (m) { M.controlled = m; SFX.switch(); }
+          if (m) setControlled(m); // B で切り替え
         }
       }
       if (M.passCharge >= 0) {
@@ -406,10 +421,11 @@
         M.passCharge = -1;
       }
 
-      // ボールを持っていないときは、ボールに一番近い選手に自動で切り替える
-      if (!(b.owner && b.owner.team === 0) && c.slide === 0 && b.passTarget !== c) {
+      // ボールを持っていないときは、ボールに一番近い選手に自動で切り替える。
+      // ただしスティックを倒している間は切り替えない（離して AUTO_SWITCH_IDLE フレームたってから）
+      if (!(b.owner && b.owner.team === 0) && c.slide === 0 && b.passTarget !== c && M.stickIdle >= AUTO_SWITCH_IDLE) {
         const m = nearestField(0, b);
-        if (m && m !== c && dist(m, b) + 40 < dist(c, b)) M.controlled = m;
+        if (m && m !== c && dist(m, b) + 40 < dist(c, b)) setControlled(m);
       }
 
       // パス先の予告（持っている間だけ。印は render が描く）
@@ -926,7 +942,7 @@
       p.x = x; p.y = y + (y === LY0 ? 4 : -4); p.vx = p.vy = 0;
       p.fx = 0; p.fy = y === LY0 ? 1 : -1;
       b.x = x; b.y = y; b.vx = b.vy = b.vz = 0; b.z = 0;
-      giveBall(p);
+      giveBall(p, false);
       // 相手は少し離れる
       for (const q of M.players) {
         if (q.team === team) continue;
@@ -1567,6 +1583,18 @@
           ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
           ctx.beginPath(); ctx.moveTo(x2 + dx * 6, y2 + dy * 6); ctx.lineTo(x2 - dy * 5, y2 + dx * 5); ctx.lineTo(x2 + dy * 5, y2 - dx * 5); ctx.fill();
         }
+        ctx.restore();
+      }
+
+      // 切り替わった瞬間: 新しい選手の足もとに大きめの輪（だんだん小さく・薄く）
+      if (M.switchFlash > 0 && M.controlled) {
+        const f = M.switchFlash / SWITCH_FLASH;
+        const fx = toSX(M.controlled.y), fy = toSY(M.controlled.x, cam) + 2;
+        ctx.save();
+        ctx.lineWidth = 3; ctx.strokeStyle = k.retro.alpha(c.magenta, f);
+        ctx.beginPath(); ctx.ellipse(fx, fy, 12 + 22 * f, 5 + 9 * f, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.lineWidth = 1.5; ctx.strokeStyle = `rgba(255,255,255,${f})`;
+        ctx.beginPath(); ctx.ellipse(fx, fy, 8 + 14 * f, 3 + 6 * f, 0, 0, Math.PI * 2); ctx.stroke();
         ctx.restore();
       }
 

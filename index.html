@@ -23,7 +23,7 @@
     <summary>遊び方</summary>
     <ul>
       <li>CNP チーム（青）を操って、忍者チーム（赤）と2分間の試合。勝てばクリア</li>
-      <li>ボールを持っているとき: A でシュート（押し続けると強いシュート）、B でパス（向いている方の味方の足元へ。長押ししてから離すと浮き玉）、A と B を同時に押すとロングシュート（どこからでもゴールへ。左右を入れるとすみを狙う）</li>
+      <li>ボールを持っているとき: A でシュート（押し続けると強いシュート）、B でパス（向いている方の味方の足元へ。パス先の味方の足もとに水色の輪が出る。長押ししてから離すと浮き玉）、A と B を同時に押すとロングシュート（どこからでもゴールへ。左右を入れるとすみを狙う）</li>
       <li>浮き球: ボールが浮いて近くにあるときに A を押すと、高ければヘディング、低ければボレーで直接蹴る（ゴールの近くで前を向いていればシュート）</li>
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（ボールに近い選手に自動でも切り替わる）</li>
       <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
@@ -71,6 +71,10 @@
     // グラウンダーは味方の足元に、着いたときに PASS_ARRIVE くらいの速さが残る強さで蹴る（転がりの減速は1px で 0.028）
     // パスの途中のボールは、速さが INTERCEPT_SPEED より速い間は相手が足で止められない（スライディングなら止められる）
     const LOB_HOLD = 12, PASS_ARRIVE = 3, INTERCEPT_SPEED = 6.5, GRAVITY = 0.25;
+    // パス先の予告: ボールを持っている間、毎フレーム選ぶパス先を足もとの印で見せる。
+    // 向きの細かいぶれで2人の間を行ったり来たりしないよう、今のパス先のコストを PASS_STICKY 倍にして少し有利にする
+    // 今のパス先は、向きの範囲も少し広く（左右 60度 → 約 67度）残す
+    const PASS_STICKY = 0.8, PASS_CONE = 0.5, PASS_CONE_STICKY = 0.38;
     // ロングシュート: ボールを持って A と B を COMBO_WINDOW フレーム以内に続けて押す。
     // ゴールの線を LONG_Z の高さで越える弧を計算して蹴る。遠いほどねらいがぶれる
     const COMBO_WINDOW = 8, LONG_SPEED = 12, LONG_Z = 22;
@@ -121,7 +125,7 @@
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
         ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null, mood: "normal", moodT: 0 },
-        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
+        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, passPreview: null, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
       };
       kickoff(0);
     }
@@ -257,23 +261,27 @@
       M.ball.land = { x: tx, y: ty };
     }
 
-    // 操作中の選手のパス先: 向いている方向（左右 60度以内）で、向きの線に一番近い味方
-    function facingMate(p) {
+    // 操作中の選手のパス先: 向いている方向（左右 60度以内）で、向きの線に一番近い味方。
+    // sticky に今のパス先を渡すと、その味方のコストを PASS_STICKY 倍にし、向きの範囲も PASS_CONE_STICKY まで広げる（印のちらつき止め）
+    function facingMate(p, sticky) {
       let best = null, bc = 1e9;
       for (const m of fieldOf(p.team)) {
         if (m === p) continue;
         const dx = m.x - p.x, dy = m.y - p.y, d = Math.hypot(dx, dy);
         const along = dx * p.fx + dy * p.fy;
-        if (d < 30 || along / d < 0.5) continue;
+        if (d < 30 || along / d < (m === sticky ? PASS_CONE_STICKY : PASS_CONE)) continue;
         const off = Math.abs(dx * p.fy - dy * p.fx); // 向きの線からのずれ
-        const cost = off * 1.5 + d * 0.2;
+        let cost = off * 1.5 + d * 0.2;
+        if (m === sticky) cost *= PASS_STICKY;
         if (cost < bc) { bc = cost; best = m; }
       }
       return best;
     }
 
     function humanPass(p, lob) {
-      const m = facingMate(p);
+      // 印で見せていたパス先に、そのまま蹴る（印と実際がずれないように）
+      const pv = M.passPreview;
+      const m = pv && pv !== p && pv.team === p.team && !pv.isGK ? pv : null;
       if (m) return passTo(p, m, lob);
       // 向いている方に味方がいなければ、その方向へ蹴り出す
       if (lob) lobTo(p, p.x + p.fx * 260, p.y + p.fy * 260);
@@ -332,7 +340,7 @@
       if (!c) return;
       if (keeperHolding(1 - c.team)) {
         // 相手のキーパーが持っている間は、操作中の選手も自動で下がる（ボタンは効かない）
-        M.charge = -1; M.passCharge = -1;
+        M.charge = -1; M.passCharge = -1; M.passPreview = null;
         if (c.stun === 0 && c.slide === 0) retreat(c);
         return;
       }
@@ -359,7 +367,7 @@
                     (cmd.bPressed && (cmd.aHeld || cmd.aPressed) && M.timer - M.lastA <= COMBO_WINDOW);
       if (combo && b.owner === c) {
         longShot(c, cmd.ay);
-        M.charge = -1; M.passCharge = -1;
+        M.charge = -1; M.passCharge = -1; M.passPreview = null;
         return;
       }
       if (cmd.aPressed) {
@@ -403,6 +411,10 @@
         const m = nearestField(0, b);
         if (m && m !== c && dist(m, b) + 40 < dist(c, b)) M.controlled = m;
       }
+
+      // パス先の予告（持っている間だけ。印は render が描く）
+      const cc = M.controlled;
+      M.passPreview = b.owner === cc ? facingMate(cc, M.passPreview) : null;
     }
 
     function seek(p, tx, ty, sp) {
@@ -1529,6 +1541,33 @@
         const lx = toSX(b.land.y), ly = toSY(b.land.x, cam);
         ctx.strokeStyle = b.lastTeam === 0 ? "#3bd1ff" : k.retro.alpha(c.danger, 0.8); ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(lx - 5, ly - 5); ctx.lineTo(lx + 5, ly + 5); ctx.moveTo(lx + 5, ly - 5); ctx.lineTo(lx - 5, ly + 5); ctx.stroke();
+      }
+
+      // パス先の予告: 印のある味方の足もとに水色の点線の輪（浮き玉になる長さまで B を押すと、明るい二重の輪と ×）。
+      // パス先がいなければ、蹴り出す向きに短い矢印
+      if (M.controlled && b.owner === M.controlled && k.phase === "playing") {
+        const lob = M.passCharge >= LOB_HOLD;
+        const pv = M.passPreview;
+        ctx.save();
+        if (pv) {
+          const px = toSX(pv.y), py = toSY(pv.x, cam) + 2;
+          ctx.strokeStyle = lob ? "#a8f4ff" : "#3bd1ff"; ctx.lineWidth = 2;
+          ctx.setLineDash(lob ? [] : [4, 3]); ctx.lineDashOffset = -renderFrame * 0.5;
+          ctx.beginPath(); ctx.ellipse(px, py, 14, 6, 0, 0, Math.PI * 2); ctx.stroke();
+          if (lob) {
+            ctx.beginPath(); ctx.ellipse(px, py, 19, 8, 0, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(px - 4, py - 4); ctx.lineTo(px + 4, py + 4); ctx.moveTo(px + 4, py - 4); ctx.lineTo(px - 4, py + 4); ctx.stroke();
+          }
+        } else {
+          const o = M.controlled;
+          const sx = toSX(o.y), sy = toSY(o.x, cam) + 2;
+          const dx = o.fy, dy = -o.fx; // 向き（ワールド → 画面）
+          const x1 = sx + dx * 14, y1 = sy + dy * 14, x2 = sx + dx * 36, y2 = sy + dy * 36;
+          ctx.strokeStyle = lob ? "#a8f4ff" : "#3bd1ff"; ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(x2 + dx * 6, y2 + dy * 6); ctx.lineTo(x2 - dy * 5, y2 + dx * 5); ctx.lineTo(x2 + dy * 5, y2 - dx * 5); ctx.fill();
+        }
+        ctx.restore();
       }
 
       // 操作中の選手の目印と、シュートの溜め

@@ -54,10 +54,18 @@
     const MIDX = FW / 2, MIDY = FH / 2;
     const GOAL_HALF = 58, GY0 = MIDY - GOAL_HALF, GY1 = MIDY + GOAL_HALF;
     const GOAL_DEPTH = 28, BAR_Z = 34;         // ゴールの奥行きとクロスバーの高さ
-    const FIELD_LEFT = (W - FH) / 2;           // ワールドの y=0 が来る画面の x
-    const CAM_MIN = H / 2 - 110, CAM_MAX = FW - H / 2 + 110; // ゴール裏のスタンドが少し見えるところまで
+    const FIELD_LEFT = (W - FH) / 2;           // フィールドを映す枠（左右の余白のあいだ）の左端
+    // 寄り（ズーム）: フィールドの枠の中を VIEW_ZOOM 倍に拡大して映す。カメラはボールを上下にも左右にも追う
+    const VIEW_ZOOM = 1.5;
+    const VCX = FIELD_LEFT + FH / 2, VCY = H / 2; // 拡大の中心（フィールドの枠のまん中）
+    // カメラ（画面のまん中に来るワールドの位置）が動ける範囲。縦はゴール裏のスタンドが少し見えるところまで、横はトラックが少し見えるところまで
+    const CAM_MIN = H / (2 * VIEW_ZOOM) - 70, CAM_MAX = FW - H / (2 * VIEW_ZOOM) + 70;
+    const CAMY_MIN = FH / (2 * VIEW_ZOOM) - 12, CAMY_MAX = FH - FH / (2 * VIEW_ZOOM) + 12;
+    const CAM_LEAD = 14; // ボールが進む方向の先を多めに映す（ボールの速さ × この数）
+    const TITLE_CAM_SWING = MIDX - (H / 2 - 110); // タイトル画面（拡大しない）でカメラが上下する幅
+    const VIEW = { camY: MIDY }; // 今のフレームの横のカメラ位置（描画のときだけ使う）
     // ワールド → 画面（cam は画面の中央に来るワールドの x）
-    const toSX = (y) => FIELD_LEFT + y;
+    const toSX = (y) => VCX + (y - VIEW.camY);
     const toSY = (x, cam) => H / 2 - (x - cam);
     const MATCH_FRAMES = 120 * 60;             // 試合時間（2分）
     const TEAM_NAMES = ["CNP", "NINJA"];
@@ -172,7 +180,7 @@
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
         ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null, mood: "normal", moodT: 0 },
-        practice, cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, aimY: null, aimDir: 1, aimLock: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
+        practice, cam: CAM_MIN, camY: MIDY, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, aimY: null, aimDir: 1, aimLock: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
       };
       kickoff(0);
     }
@@ -457,7 +465,11 @@
       checkBounds();
       const b = M.ball;
       const focus = b.owner || b;
-      M.cam += (clamp(focus.x + b.vx * 10, CAM_MIN, CAM_MAX) - M.cam) * 0.12;
+      let camTo = focus.x + b.vx * CAM_LEAD;
+      // シュートの▼が出ている間は、カメラを相手ゴールの方へ寄せる（ボールは画面に残したまま、ゴールが早めに見えるように）
+      if (M.shotAim !== null) camTo = Math.max(camTo, Math.min(focus.x + 120, (focus.x + LX1) / 2));
+      M.cam += (clamp(camTo, CAM_MIN, CAM_MAX) - M.cam) * 0.12;
+      M.camY += (clamp(focus.y + b.vy * CAM_LEAD, CAMY_MIN, CAMY_MAX) - M.camY) * 0.12;
     }
 
     function stepHuman(cmd) {
@@ -1144,6 +1156,7 @@
       M.confetti = M.confetti.filter((f) => f.y < H + 10);
       // カメラは、決めた側のスタンド（跳んでいる観客）が見えるところまでゆっくり寄る
       M.cam += ((M.goalTeam === 0 ? CAM_MAX : CAM_MIN) - M.cam) * 0.06;
+      M.camY += (MIDY - M.camY) * 0.06;
       const sc = M.scorer;
       if (M.goalTeam !== 0 || !sc) return;
       let i = 0;
@@ -1343,8 +1356,8 @@
 
     function drawField(ctx, cam) {
       ctx.save();
-      // ワールド (x, y) → 画面 (FIELD_LEFT + y, H/2 + cam - x)
-      ctx.transform(0, -1, 1, 0, FIELD_LEFT, H / 2 + cam);
+      // ワールド (x, y) → 画面 (toSX(y), H/2 + cam - x)（拡大は render がこの外でかける）
+      ctx.transform(0, -1, 1, 0, toSX(0), H / 2 + cam);
       ctx.fillStyle = TRACK;
       ctx.fillRect(0, 0, FW, FH);
       const stripe = 60;
@@ -1383,7 +1396,7 @@
 
     // ゴール裏のスタンド（観客のドット）と看板。ゴールが決まると観客が跳ねる
     function drawStands(ctx, cam) {
-      const x0 = FIELD_LEFT, w = FH;
+      const x0 = toSX(0), w = FH;
       // ゴールの後は、決めた側のスタンド（CNP なら画面の上、忍者なら下）の観客がいっせいに跳んで手を上げる
       const cheerEnd = M && M.freeze > 0 && M.freezeKind === "goal" ? (M.goalTeam === 0 ? 1 : 0) : -1;
       const jump = -Math.round(Math.abs(Math.sin(renderFrame * 0.22)) * GOAL_FX.cheerHop);
@@ -1620,7 +1633,8 @@
     function drawRefBubble(ctx, k, cam) {
       const r = M.ref;
       if (!r.bubble) return;
-      const x = clamp(toSX(r.y), FIELD_LEFT + 60, FIELD_LEFT + FH - 60), y = toSY(r.x, cam) - 44;
+      const half = FH / (2 * VIEW_ZOOM) - 40; // 拡大前の座標で、画面に見えている横の範囲
+      const x = clamp(toSX(r.y), VCX - half, VCX + half), y = toSY(r.x, cam) - 44;
       if (y < 10 || y > H) return;
       ctx.save();
       ctx.font = k.retro.fontBody(12);
@@ -1680,9 +1694,11 @@
       ctx.fillStyle = "#fff";
       ctx.fillRect(Math.round(mx(M.ball.y)) - 1, Math.round(my(M.ball.x)) - 1, 3, 3);
       // 画面に見えている範囲
-      const top = clamp(my(M.cam + H / 2), ry + 1, ry + rh - 1), bot = clamp(my(M.cam - H / 2), ry + 1, ry + rh - 1);
+      const hv = H / (2 * VIEW_ZOOM), hw = FH / (2 * VIEW_ZOOM);
+      const top = clamp(my(M.cam + hv), ry + 1, ry + rh - 1), bot = clamp(my(M.cam - hv), ry + 1, ry + rh - 1);
+      const lft = clamp(mx(M.camY - hw), rx + 1, rx + rw - 1), rgt = clamp(mx(M.camY + hw), rx + 1, rx + rw - 1);
       ctx.strokeStyle = k.retro.alpha(c.gold, 0.8);
-      ctx.strokeRect(rx + 1.5, top, rw - 3, bot - top);
+      ctx.strokeRect(lft + 0.5, top, rgt - lft - 1, bot - top);
       ctx.restore();
     }
 
@@ -1750,7 +1766,8 @@
       ctx.fillStyle = c.bg; ctx.fillRect(0, 0, W, H);
 
       if (k.phase === "title" || !M) {
-        const cam = MIDX + Math.sin(k.frame / 240) * (MIDX - CAM_MIN);
+        VIEW.camY = MIDY; // タイトルは拡大しない
+        const cam = MIDX + Math.sin(k.frame / 240) * TITLE_CAM_SWING;
         drawField(ctx, cam);
         drawGoal(ctx, cam, 1); drawGoal(ctx, cam, 0);
         k.retro.crt();
@@ -1798,15 +1815,25 @@
       }
 
       const cam = Math.round(M.cam);
+      VIEW.camY = Math.round(M.camY);
       // ゴールの直後は画面（フィールド）を数フレーム揺らす。だんだん小さく。左右の余白の文字は揺らさない
-      ctx.save();
+      let shx = 0, shy = 0;
       if (M.shake > 0) {
         const amp = GOAL_FX.shakeAmp * (M.shake / GOAL_FX.shake);
-        ctx.translate(Math.round((rnd() * 2 - 1) * amp), Math.round((rnd() * 2 - 1) * amp));
+        shx = Math.round((rnd() * 2 - 1) * amp); shy = Math.round((rnd() * 2 - 1) * amp);
       }
+      // フィールドの枠の中だけを、拡大して描く
+      const enterView = () => {
+        ctx.save();
+        ctx.beginPath(); ctx.rect(FIELD_LEFT, 0, FH, H); ctx.clip();
+        ctx.translate(VCX + shx, VCY + shy); ctx.scale(VIEW_ZOOM, VIEW_ZOOM); ctx.translate(-VCX, -VCY);
+      };
+      enterView();
       drawField(ctx, cam);
       drawGoal(ctx, cam, 1);
-      k.retro.crt();
+      ctx.restore();
+      k.retro.crt(); // 走査線は拡大しない（太くならないように）
+      enterView();
       const b = M.ball;
       // 画面の上にいるもの（ワールドの x が大きいもの）から順に描く
       const list = [...M.players, M.ref].sort((p, q) => q.x - p.x);
@@ -1868,7 +1895,8 @@
       // シュートのねらい: 相手ゴールのラインの少し手前に金の▼。A で溜めている間は、溜めに合わせて大きく・明るく
       if (M.shotAim !== null && M.controlled && b.owner === M.controlled && k.phase === "playing") {
         const r = M.charge >= 0 ? Math.min(1, M.charge / 30) : 0;
-        const ax = toSX(M.shotAim), ay = toSY(oppGoalX(0) - 14, cam);
+        // ゴールが拡大で画面の外（上）にあるときは、画面の上の端に出す
+        const ax = toSX(M.shotAim), ay = Math.max(toSY(oppGoalX(0) - 14, cam), VCY - H / (2 * VIEW_ZOOM) + 16);
         const sz = 7 + r * 6;
         ctx.save();
         ctx.fillStyle = k.retro.alpha(c.gold, 0.25 + 0.35 * r);
@@ -1949,12 +1977,6 @@
           }
         }
       }
-      // 紙吹雪
-      for (const f of M.confetti) {
-        ctx.fillStyle = f.c;
-        const w = Math.abs(Math.sin(f.ph + renderFrame * 0.2)) * f.s + 1; // くるくる回って見える
-        ctx.fillRect(Math.round(f.x), Math.round(f.y), Math.round(w), f.s);
-      }
       // 点数（+50 など）: 上へふわっと動いて、最後は薄くなって消える
       for (const q of M.popups) {
         const age = q.life - q.t;
@@ -1968,7 +1990,13 @@
         ctx.fillText(q.text, px, py);
         ctx.restore();
       }
-      ctx.restore(); // 揺れはここまで
+      ctx.restore(); // 拡大（と揺れ）はここまで
+      // 紙吹雪（画面に対して降る。拡大しない）
+      for (const f of M.confetti) {
+        ctx.fillStyle = f.c;
+        const w = Math.abs(Math.sin(f.ph + renderFrame * 0.2)) * f.s + 1; // くるくる回って見える
+        ctx.fillRect(Math.round(f.x), Math.round(f.y), Math.round(w), f.s);
+      }
       if (M.flash > 0 && M.freezeKind === "goal") {
         ctx.fillStyle = `rgba(255,255,255,${M.flash / GOAL_FX.flashDiv})`; ctx.fillRect(0, 0, W, H);
       }

@@ -55,17 +55,20 @@
     const GOAL_HALF = 58, GY0 = MIDY - GOAL_HALF, GY1 = MIDY + GOAL_HALF;
     const GOAL_DEPTH = 28, BAR_Z = 34;         // ゴールの奥行きとクロスバーの高さ
     const FIELD_LEFT = (W - FH) / 2;           // フィールドを映す枠（左右の余白のあいだ）の左端
-    // 寄り（ズーム）: フィールドの枠の中を VIEW_ZOOM 倍に拡大して映す。カメラはボールを上下にも左右にも追う
-    const VIEW_ZOOM = 1.5;
-    const VCX = FIELD_LEFT + FH / 2, VCY = H / 2; // 拡大の中心（フィールドの枠のまん中）
-    // カメラ（画面のまん中に来るワールドの位置）が動ける範囲。縦はゴール裏のスタンドが少し見えるところまで、横はトラックが少し見えるところまで
-    const CAM_MIN = H / (2 * VIEW_ZOOM) - 70, CAM_MAX = FW - H / (2 * VIEW_ZOOM) + 70;
-    const CAMY_MIN = FH / (2 * VIEW_ZOOM) - 12, CAMY_MAX = FH - FH / (2 * VIEW_ZOOM) + 12;
-    const CAM_LEAD = 14; // ボールが進む方向の先を多めに映す（ボールの速さ × この数）
-    const TITLE_CAM_SWING = MIDX - (H / 2 - 110); // タイトル画面（拡大しない）でカメラが上下する幅
     // 斜め上からの見下ろし: 画面の奥（上）ほど横に狭く・小さく、手前（下）ほど広く・大きく描く。
     // 画面に見えている上の端で (1 - VIEW_TILT) 倍、下の端で (1 + VIEW_TILT) 倍。0 にすると真上から
     const VIEW_TILT = 0.18;
+    // 寄り（ズーム）: フィールドの枠の中を VIEW_ZOOM 倍にして映す。カメラはボールを上下に追う（横に余るときは左右にも）。
+    // いちばん手前（画面の下）の段でも、左右のタッチラインと外側 VIEW_FIT_MARGIN のトラックが入るように、傾きから決める
+    const VIEW_FIT_MARGIN = 10;
+    const VIEW_ZOOM = FH / ((LY1 - LY0 + VIEW_FIT_MARGIN * 2) * (1 + VIEW_TILT));
+    const VCX = FIELD_LEFT + FH / 2, VCY = H / 2; // 拡大の中心（フィールドの枠のまん中）
+    // カメラ（画面のまん中に来るワールドの位置）が動ける範囲。縦はゴール裏のスタンドが少し見えるところまで、横はトラックが少し見えるところまで
+    const CAM_MIN = H / (2 * VIEW_ZOOM) - 70, CAM_MAX = FW - H / (2 * VIEW_ZOOM) + 70;
+    // 横は、フィールドの幅が全部入るときは真ん中に止める
+    const CAMY_MIN = Math.min(MIDY, FH / (2 * VIEW_ZOOM) - 12), CAMY_MAX = Math.max(MIDY, FH - FH / (2 * VIEW_ZOOM) + 12);
+    const CAM_LEAD = 14; // ボールが進む方向の先を多めに映す（ボールの速さ × この数）
+    const TITLE_CAM_SWING = MIDX - (H / 2 - 110); // タイトル画面（拡大しない）でカメラが上下する幅
     // 今のフレームの横のカメラ位置と、傾きの基準にする「見えている高さの半分」（拡大前の座標。描画のときだけ使う）
     const VIEW = { camY: MIDY, hv: H / (2 * VIEW_ZOOM) };
     // ワールド → 画面（cam は画面の中央に来るワールドの x）

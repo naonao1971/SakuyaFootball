@@ -104,6 +104,9 @@
     // AIM_SWEEP.edge: ▼が折り返す位置（ゴールの幅の半分に対する割合。1 だとポストの上）
     const SHOT_AIM_RANGE = 420;
     const AIM_SWEEP = { speed: 0.9, edge: 0.85 };
+    // ▼へのシュートの弾道: ゴールラインを越える高さ zBase + 溜め × zCharge（バー BAR_Z より必ず下）。
+    // 上向きの速さが vzMax を超える（山なりになる）ときは、横の速さを vMax まで上げて、低く速いシュートにする
+    const ARROW_SHOT = { zBase: 8, zCharge: 12, vzMax: 4.5, vMax: 16 };
     // キーパーのキャッチの確率（ボールの速さ別: midSpeed 未満は catchSlow、fastSpeed 未満は catchMid、それ以上は catchFast）と、
     // シュートに反応して横へ動く速さ（dive）。チームごと（[CNP, 忍者]）。
     // CNP のキーパーは強いまま、忍者チームのキーパーだけゆるめて、CNP の点が入りやすいようにする
@@ -258,6 +261,26 @@
     const facingGoal = (p) => p.fx * attackDir(p.team) > 0.2;
     const shotAimY = (aimY) => MIDY + clamp(aimY, -1, 1) * GOAL_HALF * 0.85;
 
+    // ▼へのシュート: ボールの位置からゴールラインの上の (lockY) へまっすぐ、ラインのところで高さ zLine になる弾道で蹴る。
+    // 空中にいる間の減速（1フレーム 0.993 倍）と重力から、ラインに着くまでのフレーム数と上向きの速さを逆算する。
+    // 弱すぎて届かない・山なりになりすぎるときは、横の速さを上げる（▼まで必ず、低めで届く）
+    function arrowKick(p, lockY, v, zLine) {
+      const b = M.ball, dir = attackDir(p.team), f = 0.993;
+      let dx = oppGoalX(p.team) - b.x, dy = lockY - b.y;
+      if (dx * dir < 1) dx = dir;
+      const d = Math.hypot(dx, dy);
+      let vz = 0;
+      for (; ; v += 0.25) {
+        const k = (d * (1 - f)) / v;
+        if (k >= 0.95) continue;                       // この速さでは空中のまま届かない
+        const n = Math.log(1 - k) / Math.log(f);         // ラインに着くまでのフレーム数
+        vz = (zLine + (GRAVITY * n * (n - 1)) / 2) / n;  // n フレーム後にちょうど zLine の高さ
+        if (vz <= ARROW_SHOT.vzMax || v >= ARROW_SHOT.vMax) break;
+      }
+      p.fx = dir; p.fy = 0;
+      kick(p, dx, dy, v, vz);
+    }
+
     // lockY: ねらいの▼が出ていたときの、A を押した瞬間の▼の横位置。あれば向きに関係なくそこへ蹴る
     function shoot(p, charge, aimY, lockY = null) {
       const t = Math.min(1, charge / 30);
@@ -265,10 +288,10 @@
       const b = M.ball;
       let dx, dy;
       if (lockY !== null) {
-        // ボールの位置からゴールラインの上の▼の位置へまっすぐ蹴るので、▼のところでラインを越える
-        dx = oppGoalX(p.team) - b.x; dy = lockY - b.y;
-        if (dx * dir < 1) dx = dir;
-        p.fx = dir; p.fy = 0;
+        arrowKick(p, lockY, SHOT.base + t * SHOT.charge, ARROW_SHOT.zBase + t * ARROW_SHOT.zCharge);
+        SFX.shoot(t);
+        praiseShot(p);
+        return;
       } else if (facingGoal(p)) {
         // ゴールの方を向いていれば、ゴールの枠へ（横の入力でゴールの左右のすみを狙う）。
         // ボールの位置からゴールラインの上の (ねらいの横位置) へまっすぐ蹴るので、ねらいの矢印のところでラインを越える
@@ -313,7 +336,16 @@
     }
 
     // ロングシュート: ゴールの枠（横の入力で左右のすみ）へ、ゴールラインを LONG_Z の高さで越える弧で蹴る
-    function longShot(p, aimY) {
+    // lockY: ▼が出ているときの▼の横位置。あれば、そこへ低く速いロングシュートを蹴る
+    function longShot(p, aimY, lockY = null) {
+      if (lockY !== null) {
+        arrowKick(p, lockY, LONG_SPEED, ARROW_SHOT.zBase + ARROW_SHOT.zCharge);
+        praiseShot(p);
+        M.longShot = 50;
+        SFX.longShot();
+        refJudge("longshot");
+        return;
+      }
       const dir = attackDir(p.team);
       const gx = oppGoalX(p.team);
       const d0 = Math.abs(gx - p.x);
@@ -456,7 +488,7 @@
       const combo = (cmd.aPressed && (cmd.bHeld || cmd.bPressed) && M.timer - M.lastB <= COMBO_WINDOW) ||
                     (cmd.bPressed && (cmd.aHeld || cmd.aPressed) && M.timer - M.lastA <= COMBO_WINDOW);
       if (combo && b.owner === c) {
-        longShot(c, cmd.ay);
+        longShot(c, cmd.ay, M.aimLock !== null ? M.aimLock : M.shotAim); // ▼が出ていれば▼の位置へ
         M.charge = -1; M.passCharge = -1; M.passPreview = null; M.shotAim = null; M.aimLock = null;
         return;
       }

@@ -29,6 +29,7 @@
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（スティックを離すと、ボールに近い選手に自動でも切り替わる。走っている間は切り替わらない。切り替わった選手の足もとが光る）</li>
       <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
       <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を押している間、PC は C キーを押している間、操作中の選手が速くなる。走りすぎるとスタミナが切れて、その選手はしばらくダッシュできない（左のパネルのバー）</li>
+      <li>キーパー: CNP のキーパーがボールを持つと、操作がキーパーに移る。スティックで向きを変え、B で向いている方の味方の足もとへパス（長押しで浮き玉）、A で前へ大きく蹴る。何もしなければ約4秒で自動で蹴る</li>
       <li>練習モード: ⚙ の「練習モード（キーパーだけ）」を ON にしてスタート。相手はキーパーだけで、時間切れもランキング登録もない。OFF にすると普通の試合に戻る</li>
       <li>PC: 矢印 / WASD で移動 ・ X が A ・ Z が B ・ C を押している間ダッシュ ・ P 一時停止 ・ M 音</li>
       <li>姉妹作: <a href="https://sakuya.naoblock.com/">咲耶スクランブル</a> / <a href="https://rally.naoblock.jp/">咲耶Nounラリー</a> / <a href="https://jumpbug.naoblock.jp/">咲耶ジャンプバグ</a></li>
@@ -88,6 +89,10 @@
     const AIR_MIN = 5, AIR_MAX = 40, HEAD_Z = 20, STRIKE_REACH = 20, STRIKE_BUFFER = 20;
     const RETREAT_MARGIN = 20;                 // キーパーが持ったとき、相手はハーフラインからこれだけ自陣側へ下がる
     const KEEPER_HOLD_MIN = 40, KEEPER_HOLD_MAX = 170; // キーパーがボールを持つ長さ（フレーム）
+    // CNP のキーパーがボールを持ったら、操作がキーパーに移る（スティックで向き、B でパス・長押しで浮き玉、A で大きく蹴る）。
+    // KEEPER_CONTROL_MIN フレームまではボタンを受け付けない（キャッチした瞬間の押しっぱなしで蹴らないように）。
+    // 何もしなければ KEEPER_CONTROL_MAX フレームで、AI と同じように前の味方へ大きく蹴る
+    const KEEPER_CONTROL_MIN = 12, KEEPER_CONTROL_MAX = 240;
     // 操作中の選手のシュートの速さ: base + 溜め（0〜1）× charge
     const SHOT = { base: 7.5, charge: 6 };
     // ゴールの演出（CNP が決めたとき。忍者チームのときは控えめ: 下のスタンドだけ・紙吹雪なし・揺れなし）
@@ -227,7 +232,7 @@
       const b = M.ball;
       b.owner = p; b.passTarget = null; b.z = 0; b.vz = 0; b.lastTeam = p.team;
       p.hold = 0;
-      if (p.team === 0 && !p.isGK) setControlled(p, sound); // ボールを奪った・拾った
+      if (p.team === 0) setControlled(p, sound); // ボールを奪った・拾った（CNP のキーパーがキャッチしたら、キーパーを操作する）
     }
 
     function nearestField(team, pt, except) {
@@ -460,6 +465,13 @@
       const b = M.ball;
       if (!c) return;
       M.stickIdle = Math.hypot(cmd.ax, cmd.ay) <= 0.08 ? M.stickIdle + 1 : 0;
+      if (c.isGK) {
+        if (b.owner === c) return keeperControl(c, cmd);
+        // キーパーがボールを離したら、ボールに近いフィールドの選手に操作を戻す
+        setControlled(nearestField(0, b), false);
+        M.passCharge = -1; M.charge = -1;
+        return;
+      }
       if (keeperHolding(1 - c.team)) {
         // 相手のキーパーが持っている間は、操作中の選手も自動で下がる（ボタンは効かない）
         M.charge = -1; M.passCharge = -1; M.passPreview = null; M.shotAim = null; M.aimLock = null;
@@ -568,6 +580,42 @@
         M.shotAim = null; M.aimY = null;
         if (b.owner !== cc) M.aimLock = null;
       }
+    }
+
+    // CNP のキーパーがボールを持っている間の操作。キーパーは動かず、スティックで向きを変える
+    function keeperControl(g, cmd) {
+      const b = M.ball;
+      g.tvx = g.tvy = 0; g.vx = g.vy = 0;
+      g.hold++;
+      const n = Math.hypot(cmd.ax, cmd.ay);
+      if (n > 0.08) { g.fx = cmd.ax / n; g.fy = cmd.ay / n; }
+      M.shotAim = null; M.charge = -1;
+      const ready = g.hold > KEEPER_CONTROL_MIN;
+      // B: 短く押すと向いている方の味方の足もとへ、長押しで浮き玉（フィールドの選手と同じ）
+      if (cmd.bPressed && ready) M.passCharge = 0;
+      if (M.passCharge >= 0 && cmd.bHeld) M.passCharge = Math.min(LOB_HOLD + 20, M.passCharge + 1);
+      if (cmd.bReleased && M.passCharge >= 0) {
+        // 向いている方に味方がいなければ（自分のゴールへ蹴らないよう）大きく前へ
+        if (M.passPreview) humanPass(g, M.passCharge >= LOB_HOLD); else keeperClear(g);
+        M.passCharge = -1;
+      } else if ((cmd.aPressed && ready) || g.hold > KEEPER_CONTROL_MAX) {
+        // A（か、何もしないまま時間がたったら）: 前の空いている味方へ大きく蹴る
+        M.passCharge = -1;
+        keeperClear(g);
+      }
+      if (b.owner === g) M.passPreview = facingMate(g, M.passPreview);
+      else {
+        // 蹴ったら、受け手（パスのとき）かボールに近いフィールドの選手に操作を戻す
+        M.passPreview = null;
+        if (M.controlled === g) setControlled(b.passTarget && b.passTarget.team === 0 ? b.passTarget : nearestField(0, b), false);
+      }
+    }
+
+    // キーパーの大きなキック: 前の空いている味方へ（遠ければ浮き玉）。いなければ前へ大きく
+    function keeperClear(p) {
+      const opt = bestPassOption(p);
+      if (opt) passTo(p, opt.m, opt.lob || dist(p, opt.m) > 200);
+      else { kick(p, attackDir(p.team), 0, 9, 3); SFX.pass(); }
     }
 
     function seek(p, tx, ty, sp) {
@@ -850,11 +898,7 @@
         p.tvx = p.tvy = 0;
         p.hold++;
         const opponentsBack = fieldOf(1 - p.team).every((q) => (q.x - MIDX) * attackDir(p.team) > -4);
-        if (p.hold > KEEPER_HOLD_MIN && (opponentsBack || p.hold > KEEPER_HOLD_MAX)) {
-          const opt = bestPassOption(p);
-          if (opt) passTo(p, opt.m, opt.lob || dist(p, opt.m) > 200);
-          else { kick(p, attackDir(p.team), 0, 9, 3); SFX.pass(); }
-        }
+        if (p.hold > KEEPER_HOLD_MIN && (opponentsBack || p.hold > KEEPER_HOLD_MAX)) keeperClear(p);
         return;
       }
       const towardGoal = b.vx * attackDir(p.team) < -0.5 && !b.owner;
@@ -1116,7 +1160,7 @@
       const g = gkOf(team);
       g.x = ownGoalX(team) + attackDir(team) * 18; g.y = MIDY; g.vx = g.vy = 0;
       M.ball.x = g.x; M.ball.y = g.y; M.ball.vx = M.ball.vy = M.ball.vz = 0; M.ball.z = 0;
-      giveBall(g);
+      giveBall(g, false); // ゴールキック（笛が鳴るので切り替えの音は鳴らさない）
       freeze(40, "restart", "GOAL KICK");
       refJudge("goalkick", team);
       SFX.whistle(false);
@@ -1879,6 +1923,11 @@
         }
         ctx.fillStyle = c.magenta;
         ctx.beginPath(); ctx.moveTo(x - 6, y); ctx.lineTo(x + 6, y); ctx.lineTo(x, y + 7); ctx.fill();
+        // キーパーを操作しているときは、ボタンの使い方を出す
+        if (cp.isGK && b.owner === cp && k.retro.blinkOn(20)) {
+          ctx.save(); ctx.font = k.retro.font(8); ctx.textAlign = "center"; ctx.fillStyle = "#3bd1ff";
+          ctx.fillText("B:PASS  A:KICK", x, y - 16); ctx.restore();
+        }
         // 浮き球が近いときは「A」で直接蹴れることを知らせる
         if (!b.owner && b.z > 3 && dist(cp, b) < 80 && k.retro.blinkOn(8)) {
           ctx.save(); ctx.font = k.retro.font(9); ctx.textAlign = "center"; ctx.fillStyle = c.gold;

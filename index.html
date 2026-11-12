@@ -24,6 +24,7 @@
     <ul>
       <li>CNP チーム（青）を操って、忍者チーム（赤）と2分間の試合。勝てばクリア</li>
       <li>ボールを持っているとき: A でシュート（押し続けると強いシュート。ゴールの近くで前を向くと、ゴールの上に金の▼が出て、そこへ飛ぶ。上と左右をいっしょに入れると▼がすみへ動く）、B でパス（向いている方の味方の足元へ。パス先の味方の足もとに水色の輪が出る。長押ししてから離すと浮き玉）、A と B を同時に押すとロングシュート（どこからでもゴールへ。左右を入れるとすみを狙う）</li>
+      <li>点数: ボールを奪う +50、パスが味方に届く +30、枠に飛んだシュート +100（キーパーに取られても）、ドリブルで相手を抜く +50、ゴール +1000（その CNP の初ゴールは さらに +300）。点が入るたびに、その場所に数字が出る</li>
       <li>浮き球: ボールが浮いて近くにあるときに A を押すと、高ければヘディング、低ければボレーで直接蹴る（ゴールの近くで前を向いていればシュート）</li>
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（スティックを離すと、ボールに近い選手に自動でも切り替わる。走っている間は切り替わらない。切り替わった選手の足もとが光る）</li>
       <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
@@ -94,6 +95,8 @@
     const GOAL_FX = { flash: 28, flashEnemy: 20, flashDiv: 45, shake: 12, shakeAmp: 4, cheerHop: 5, confetti: 30, gather: 2.0 };
     // 点数の表示（+50 など）: 出ている長さ（フレーム）、上へ動く速さ、同時に出す数の上限
     const POPUP = { life: 40, lifeBig: 70, rise: 0.6, max: 4 };
+    // 細かいプレーの点（CNP チームだけ）: ボールを奪う・スライディングで奪う・パスが味方に届く・枠に飛んだシュート・ドリブルで相手を抜く・ゴール・その CNP の初ゴール
+    const POINTS = { steal: 50, tackle: 50, pass: 30, onTarget: 100, beat: 50, goal: 1000, firstGoal: 300 };
     // シュートのねらいの矢印: ボールを持って相手ゴールの方を向き、ゴールまで SHOT_AIM_RANGE 以内のときだけ出す
     const SHOT_AIM_RANGE = 420;
     // キーパーのキャッチの確率（ボールの速さ別: midSpeed 未満は catchSlow、fastSpeed 未満は catchMid、それ以上は catchFast）と、
@@ -149,7 +152,7 @@
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
         ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null, mood: "normal", moodT: 0 },
-        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
+        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
       };
       kickoff(0);
     }
@@ -258,6 +261,7 @@
       }
       kick(p, dx, dy, SHOT.base + t * SHOT.charge, 1 + t * 3.1);
       SFX.shoot(t);
+      praiseShot(p);
     }
 
     // 味方の足元へのパス。受け手はその場でボールを待つ（AI も、入力の無い操作中の選手も）
@@ -269,6 +273,25 @@
       M.ball.passTarget = m;
       if (m.team === 0) setControlled(m, false); // パスの受け手へ（パスの音とかぶるので切り替えの音は鳴らさない）
       SFX.pass(lob);
+    }
+
+    // 蹴ったばかりのボールが、だれにも当たらなければゴールの枠に入るか（stepBall と同じ動き方で先を読む）
+    function onTarget(team) {
+      const b = M.ball, gx = oppGoalX(team), dir = attackDir(team);
+      let x = b.x, y = b.y, z = b.z, vx = b.vx, vy = b.vy, vz = b.vz;
+      for (let i = 0; i < 180; i++) {
+        x += vx; y += vy; z += vz;
+        if (z > 0) vz -= GRAVITY;
+        if (z <= 0) { z = 0; vz = vz < -1.2 ? -vz * 0.45 : 0; }
+        const f = z > 0 ? 0.993 : 0.972; vx *= f; vy *= f;
+        if ((x - gx) * dir > 0) return y > GY0 && y < GY1 && z < BAR_Z;
+        if (y < LY0 || y > LY1 || Math.hypot(vx, vy) < 0.3) return false;
+      }
+      return false;
+    }
+    // CNP のシュートが枠に飛んだら、蹴った選手のところに点（キーパーに取られても付ける）
+    function praiseShot(p) {
+      if (p.team === 0 && onTarget(0)) addPoints(POINTS.onTarget, p.x, p.y);
     }
 
     // ロングシュート: ゴールの枠（横の入力で左右のすみ）へ、ゴールラインを LONG_Z の高さで越える弧で蹴る
@@ -287,6 +310,7 @@
       const zt = LONG_Z + (rnd() * 2 - 1) * (6 + 10 * Math.min(1, d0 / 700));
       const vz = (zt + (GRAVITY * n * n) / 2) / n;
       kick(p, tx - p.x, ty - p.y, v, vz);
+      praiseShot(p);
       M.longShot = 50;
       SFX.longShot();
       refJudge("longshot");
@@ -461,6 +485,22 @@
         if (m && m !== c && dist(m, b) + 40 < dist(c, b)) setControlled(m);
       }
 
+      // ドリブルで相手を抜いた: 持っている間、すぐ前（攻める向きに 0〜45px、横に 30px 以内）にいた相手が、
+      // ボールを持ったまま後ろ（10px より後ろ）になったら +50。1回の持ちで、同じ相手は1回だけ
+      const cd = M.controlled;
+      if (b.owner === cd && cd.team === 0) {
+        if (M.dribbleOwner !== cd || cd.hold < 2) { M.dribbleOwner = cd; M.dribbleAhead = new Set(); M.dribbleBeaten = new Set(); }
+        const dirA = attackDir(0);
+        for (const q of fieldOf(1)) {
+          const ahead = (q.x - cd.x) * dirA, side = Math.abs(q.y - cd.y);
+          if (ahead > 0 && ahead < 45 && side < 30) M.dribbleAhead.add(q);
+          else if (M.dribbleAhead.has(q) && ahead < -10 && !M.dribbleBeaten.has(q)) {
+            M.dribbleBeaten.add(q);
+            addPoints(POINTS.beat, cd.x, cd.y);
+          }
+        }
+      } else M.dribbleOwner = null;
+
       // パス先の予告（持っている間だけ。印は render が描く）
       const cc = M.controlled;
       M.passPreview = b.owner === cc ? facingMate(cc, M.passPreview) : null;
@@ -630,6 +670,7 @@
         tx = p.x + (p.fx || dir) * 200; ty = p.y + p.fy * 200;
       }
       kick(p, tx - p.x, ty - p.y, header ? 8.5 : 11.5, header ? 0.6 : 1.6);
+      praiseShot(p);
       p.act = { kind: header ? "head" : "volley", t: 16 };
       SFX.airStrike(header);
     }
@@ -895,7 +936,11 @@
             // スライディングで当たったボールは、滑った向きに転がる
             kick(best, best.vx, best.vy, Math.hypot(best.vx, best.vy) * 1.1, 1);
             best.kickCd = 20;
-          } else giveBall(best);
+          } else {
+            // CNP のパスが、ねらった味方に届いた
+            if (best.team === 0 && b.passTarget === best && b.lastTeam === 0) addPoints(POINTS.pass, best.x, best.y);
+            giveBall(best);
+          }
         }
       }
       // スライディングとボディコンタクトでボールを奪う
@@ -915,7 +960,7 @@
             o.stun = 45;
             kick(p, p.vx + (rnd() - 0.5), p.vy + (rnd() - 0.5), 3.2, 1.5);
             p.kickCd = 6;
-            if (p.team === 0) kit.score.add(50);
+            if (p.team === 0) addPoints(POINTS.tackle, p.x, p.y);
             SFX.tackle();
             M.flash = 6;
             refJudge("playon");
@@ -924,7 +969,7 @@
           if (p.slide === 0 && p.kickCd === 0 && d < 14 && o.hold > 8 && rnd() < (p.team === 0 ? 0.1 : ENEMY.steal)) {
             o.stun = 18;
             giveBall(p);
-            if (p.team === 0) kit.score.add(50);
+            if (p.team === 0) addPoints(POINTS.steal, p.x, p.y);
             SFX.steal();
             return;
           }
@@ -967,9 +1012,9 @@
       M.goalTeam = team;
       M.scorer = k && k.team === team && !k.isGK ? k : null;
       if (team === 0) {
-        addPoints(1000, LX1 - 30, M.ball.y, true);
+        addPoints(POINTS.goal, LX1 - 30, M.ball.y, true);
         // 決めた CNP を記録（ランキングのロスターに出る）
-        if (k && k.team === 0 && k.ch && kit.cnp.run.collect(k.ch.no)) addPoints(300, LX1 - 80, M.ball.y);
+        if (k && k.team === 0 && k.ch && kit.cnp.run.collect(k.ch.no)) addPoints(POINTS.firstGoal, LX1 - 80, M.ball.y);
         M.flash = GOAL_FX.flash;
         if (!kit.retro.reduceMotion) M.shake = GOAL_FX.shake; // 画面効果を減らす設定のときは揺らさない
         // 紙吹雪（画面の上から、フィールドの幅に）
@@ -1134,7 +1179,9 @@
       subtitle: "- KICK OFF 11 CNP -",
       // 咲耶シリーズ共通のランキング（sakuya-kit/gas/apps-script.gs）。新しい GAS は作らない
       gasUrl: "https://script.google.com/macros/s/AKfycby-UoKAfHw4eBULVb37tQzwPEhNm65B_HUktd9Sh0ZxMdOdmnRHdub0NeeXUCAqg8bG/exec",
-      maxScore: 99999, // 試作の仮。スコアの付け方が決まったら理論上の最高点から決め、_games のスコア上限とそろえる
+      // 試作の仮。細かいプレーの点（④）を足したあと、単純な自動操作の20試合で1試合の平均 約7,700点・最高 約12,500点。
+      // 人が上手に遊ぶとこの数倍になりうるので、本番の値は遊んだ記録を見て決め、_games のスコア上限とそろえる
+      maxScore: 99999,
       cnp: true,
       offline: true,
       rankingLabels: { clear: "勝利", progress: "結果" },

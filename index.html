@@ -23,7 +23,7 @@
     <summary>遊び方</summary>
     <ul>
       <li>CNP チーム（青）を操って、忍者チーム（赤）と2分間の試合。勝てばクリア</li>
-      <li>ボールを持っているとき: A でシュート（押し続けると強いシュート。ゴールの近くで前を向くと、ゴールの上に金の▼が出て、そこへ飛ぶ。上と左右をいっしょに入れると▼がすみへ動く）、B でパス（向いている方の味方の足元へ。パス先の味方の足もとに水色の輪が出る。長押ししてから離すと浮き玉）、A と B を同時に押すとロングシュート（どこからでもゴールへ。左右を入れるとすみを狙う）</li>
+      <li>ボールを持っているとき: A でシュート（押し続けると強いシュート。ゴールの近くでボールを持つと、ゴールの上で金の▼が左右に動く。A を押した瞬間の▼の位置へ飛ぶ）、B でパス（向いている方の味方の足元へ。パス先の味方の足もとに水色の輪が出る。長押ししてから離すと浮き玉）、A と B を同時に押すとロングシュート（どこからでもゴールへ。左右を入れるとすみを狙う）</li>
       <li>点数: ボールを奪う +50、パスが味方に届く +30、枠に飛んだシュート +100（キーパーに取られても）、ドリブルで相手を抜く +50、ゴール +1000（その CNP の初ゴールは さらに +300）。点が入るたびに、その場所に数字が出る</li>
       <li>浮き球: ボールが浮いて近くにあるときに A を押すと、高ければヘディング、低ければボレーで直接蹴る（ゴールの近くで前を向いていればシュート）</li>
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（スティックを離すと、ボールに近い選手に自動でも切り替わる。走っている間は切り替わらない。切り替わった選手の足もとが光る）</li>
@@ -98,8 +98,12 @@
     const POPUP = { life: 40, lifeBig: 70, rise: 0.6, max: 4 };
     // 細かいプレーの点（CNP チームだけ）: ボールを奪う・スライディングで奪う・パスが味方に届く・枠に飛んだシュート・ドリブルで相手を抜く・ゴール・その CNP の初ゴール
     const POINTS = { steal: 50, tackle: 50, pass: 30, onTarget: 100, beat: 50, goal: 1000, firstGoal: 300 };
-    // シュートのねらいの矢印: ボールを持って相手ゴールの方を向き、ゴールまで SHOT_AIM_RANGE 以内のときだけ出す
+    // シュートのねらいの矢印: ボールを持って、ゴールまで SHOT_AIM_RANGE 以内のときだけ出す。
+    // ▼はゴールの上を左右に一定の速さで行ったり来たりし、A を押した瞬間の▼の位置へシュートが飛ぶ（スティックの向きは関係なし）。
+    // AIM_SWEEP.speed: ▼が動く速さ（1フレームあたりのドット。ゆっくりめから。遊んで決める）、
+    // AIM_SWEEP.edge: ▼が折り返す位置（ゴールの幅の半分に対する割合。1 だとポストの上）
     const SHOT_AIM_RANGE = 420;
+    const AIM_SWEEP = { speed: 0.9, edge: 0.85 };
     // キーパーのキャッチの確率（ボールの速さ別: midSpeed 未満は catchSlow、fastSpeed 未満は catchMid、それ以上は catchFast）と、
     // シュートに反応して横へ動く速さ（dive）。チームごと（[CNP, 忍者]）。
     // CNP のキーパーは強いまま、忍者チームのキーパーだけゆるめて、CNP の点が入りやすいようにする
@@ -160,7 +164,7 @@
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
         ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null, mood: "normal", moodT: 0 },
-        practice, cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
+        practice, cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, aimY: null, aimDir: 1, aimLock: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
       };
       kickoff(0);
     }
@@ -250,16 +254,22 @@
       M.lastKicker = p;
     }
 
-    // シュートがゴールの方を向いているか、と、ねらう横位置。shoot() とねらいの矢印の両方がこれを使う（表示と実際がずれないように）
+    // シュートがゴールの方を向いているか、と、横の入力からねらう横位置（▼が出ていないところからのシュートで使う）
     const facingGoal = (p) => p.fx * attackDir(p.team) > 0.2;
     const shotAimY = (aimY) => MIDY + clamp(aimY, -1, 1) * GOAL_HALF * 0.85;
 
-    function shoot(p, charge, aimY) {
+    // lockY: ねらいの▼が出ていたときの、A を押した瞬間の▼の横位置。あれば向きに関係なくそこへ蹴る
+    function shoot(p, charge, aimY, lockY = null) {
       const t = Math.min(1, charge / 30);
       const dir = attackDir(p.team);
       const b = M.ball;
       let dx, dy;
-      if (facingGoal(p)) {
+      if (lockY !== null) {
+        // ボールの位置からゴールラインの上の▼の位置へまっすぐ蹴るので、▼のところでラインを越える
+        dx = oppGoalX(p.team) - b.x; dy = lockY - b.y;
+        if (dx * dir < 1) dx = dir;
+        p.fx = dir; p.fy = 0;
+      } else if (facingGoal(p)) {
         // ゴールの方を向いていれば、ゴールの枠へ（横の入力でゴールの左右のすみを狙う）。
         // ボールの位置からゴールラインの上の (ねらいの横位置) へまっすぐ蹴るので、ねらいの矢印のところでラインを越える
         dx = oppGoalX(p.team) - b.x; dy = shotAimY(aimY) - b.y;
@@ -420,7 +430,7 @@
       M.stickIdle = Math.hypot(cmd.ax, cmd.ay) <= 0.08 ? M.stickIdle + 1 : 0;
       if (keeperHolding(1 - c.team)) {
         // 相手のキーパーが持っている間は、操作中の選手も自動で下がる（ボタンは効かない）
-        M.charge = -1; M.passCharge = -1; M.passPreview = null; M.shotAim = null;
+        M.charge = -1; M.passCharge = -1; M.passPreview = null; M.shotAim = null; M.aimLock = null;
         if (c.stun === 0 && c.slide === 0) retreat(c);
         return;
       }
@@ -447,11 +457,11 @@
                     (cmd.bPressed && (cmd.aHeld || cmd.aPressed) && M.timer - M.lastA <= COMBO_WINDOW);
       if (combo && b.owner === c) {
         longShot(c, cmd.ay);
-        M.charge = -1; M.passCharge = -1; M.passPreview = null; M.shotAim = null;
+        M.charge = -1; M.passCharge = -1; M.passPreview = null; M.shotAim = null; M.aimLock = null;
         return;
       }
       if (cmd.aPressed) {
-        if (b.owner === c) M.charge = 0;
+        if (b.owner === c) { M.charge = 0; M.aimLock = M.shotAim; } // ▼が出ていれば、押した瞬間の位置で止める
         else if (!b.owner && b.z > 3 && dist(c, b) < 80) M.strikeBuf = STRIKE_BUFFER; // 浮き球にはヘディング・ボレー
         else startSlide(c);
       }
@@ -466,8 +476,8 @@
         else if (cmd.aHeld) M.charge = Math.min(36, M.charge + 1);
       }
       if (cmd.aReleased && M.charge >= 0) {
-        if (b.owner === c) shoot(c, M.charge, cmd.ay);
-        M.charge = -1;
+        if (b.owner === c) shoot(c, M.charge, cmd.ay, M.aimLock);
+        M.charge = -1; M.aimLock = null;
       }
       // B: ボールを持っていれば押した長さでパスの種類を決める（離したときに蹴る）。持っていなければ選手の切り替え
       if (cmd.bPressed) {
@@ -512,8 +522,20 @@
       // パス先の予告（持っている間だけ。印は render が描く）
       const cc = M.controlled;
       M.passPreview = b.owner === cc ? facingMate(cc, M.passPreview) : null;
-      // シュートのねらい（持っていて、ゴールの方を向き、近いときだけ）。shoot() と同じ式で、今の横の入力から出す
-      M.shotAim = b.owner === cc && facingGoal(cc) && Math.abs(oppGoalX(cc.team) - cc.x) <= SHOT_AIM_RANGE ? shotAimY(cmd.ay) : null;
+      // シュートのねらい（持っていて、ゴールに近いときだけ）。▼は左右に一定の速さで行ったり来たりし、A を押している間は止まる
+      if (b.owner === cc && Math.abs(oppGoalX(cc.team) - cc.x) <= SHOT_AIM_RANGE) {
+        const lim = GOAL_HALF * AIM_SWEEP.edge;
+        if (M.aimY === null) { M.aimY = MIDY; M.aimDir = rnd() < 0.5 ? -1 : 1; } // 出たときは真ん中から
+        if (M.aimLock === null) {
+          M.aimY += M.aimDir * AIM_SWEEP.speed;
+          if (M.aimY > MIDY + lim) { M.aimY = MIDY + lim; M.aimDir = -1; }
+          if (M.aimY < MIDY - lim) { M.aimY = MIDY - lim; M.aimDir = 1; }
+        }
+        M.shotAim = M.aimLock !== null ? M.aimLock : M.aimY;
+      } else {
+        M.shotAim = null; M.aimY = null;
+        if (b.owner !== cc) M.aimLock = null;
+      }
     }
 
     function seek(p, tx, ty, sp) {
@@ -1221,7 +1243,7 @@
       },
       onStart: () => { clearPending(); clearDash(); newMatch(); },
       // ポーズ・設定・タブ切り替えなどで入力が消えたら、ダッシュの押しっぱなしも解く
-      onInputReset: () => { if (M) { M.charge = -1; M.passCharge = -1; M.strikeBuf = 0; for (const p of M.players) p.boost = 0; } clearPending(); clearDash(); },
+      onInputReset: () => { if (M) { M.aimLock = null; M.charge = -1; M.passCharge = -1; M.strikeBuf = 0; for (const p of M.players) p.boost = 0; } clearPending(); clearDash(); },
       // PC: C キーを押している間ダッシュ（離すのは下の keyup で見る）
       onKeyDown: (e) => { if (e.code === "KeyC" && !e.repeat) dashInput.key = true; },
       update: (k) => {

@@ -29,7 +29,7 @@
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（スティックを離すと、ボールに近い選手に自動でも切り替わる。走っている間は切り替わらない。切り替わった選手の足もとが光る）</li>
       <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
       <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を押している間、PC は C キーを押している間、操作中の選手が速くなる。走りすぎるとスタミナが切れて、その選手はしばらくダッシュできない（左のパネルのバー）</li>
-      <li>スルーパス: ボールを持ってダッシュしながら（右側を押したまま／C）B を押すと、向いた方向の先の空いたところへパス。行き先に水色の ×、走り込む味方に水色の輪が出て、その味方が全力で走り込む。長押しで浮き玉のスルーパス</li>
+      <li>スルーパス: ボールを持ってダッシュしながら、またはダッシュをやめてすぐ（約0.7秒以内）に B を押すと、向いた方向の先の空いたところへパス。行き先に水色の ×、走り込む味方に水色の輪が出て、その味方が全力で走り込む。B を長押しすると浮き玉のスルーパス（「LOB THROUGH」。相手の頭を越えて、もっと遠くへ）</li>
       <li>体でキープ: ボールを持っているとき、近くの忍者に背中を向ける（スティックで忍者と反対の方を向く）と、体でボールを守って取られにくくなる。足もとに金の弧と「KEEP」が出る。後ろからのスライディングも空振りしやすい</li>
       <li>キーパー: CNP のキーパーがボールを持つと、操作がキーパーに移る。スティックで向きを変え、B で向いている方の味方の足もとへパス（長押しで浮き玉）、A で前へ大きく蹴る。何もしなければ約4秒で自動で蹴る</li>
       <li>練習モード: ⚙ の「練習モード（キーパーだけ）」を ON にしてスタート。相手はキーパーだけで、時間切れもランキング登録もない。OFF にすると普通の試合に戻る</li>
@@ -100,7 +100,12 @@
     // 味方の走る速さ run で、ボールが着く time + slack フレームまでに着ける場所の中から、遠く・前へ進み・相手から離れた場所を選ぶ。
     // 相手が（速さ foeRun で）味方より foeMargin フレーム以上早く着ける場所や、通り道の lane 以内に相手がいる場所には出さない。
     // 選ばれた味方は、そこへ全力で走り込む（操作もその味方に移り、ボールを受けるまではスティックを倒していても自動で走る）
-    const THROUGH = { minDist: 90, maxDist: 280, step: 10, run: 2.4, slack: 8, arrive: 3.5, foeAvoid: 28, lane: 18, foeRun: 2.0, foeMargin: 6 };
+    const THROUGH = { minDist: 90, maxDist: 280, step: 10, run: 2.4, slack: 8, arrive: 1.2, foeAvoid: 28, lane: 18, foeRun: 2.0, foeMargin: 6,
+      grace: 40, lobMin: 120, lobMax: 360, lobFoeAvoid: 20, relaxSlack: 60, keeperAvoid: 70, lobLandKeep: 0.25 };
+    // lobLandKeep: 浮き玉のスルーパスが落ちたとき、横の速さをこの倍率に落とす（落ちたあと転がりすぎない）
+    // grace: ダッシュをやめてからこのフレーム数（約0.7秒）までに B を押せばスルーパス（B を押した時点で決める）。
+    // lobMin〜lobMax: 浮き玉のスルーパスの距離（空中は相手に止められないので、通り道は気にせず遠くまで。落ちる場所の相手だけ避ける）。
+    // 安全な行き先がないときは、相手の条件をはずし、味方が relaxSlack フレームの遅れまでで着ける場所へ出す
     // パス先の予告: ボールを持っている間、毎フレーム選ぶパス先を足もとの印で見せる。
     // 向きの細かいぶれで2人の間を行ったり来たりしないよう、今のパス先のコストを PASS_STICKY 倍にして少し有利にする
     // 今のパス先は、向きの範囲も少し広く（左右 60度 → 約 67度）残す
@@ -203,7 +208,7 @@
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
         ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null, mood: "normal", moodT: 0 },
-        practice, throughPreview: null, cam: CAM_MIN, camY: MIDY, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, aimY: null, aimDir: 1, aimLock: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
+        practice, throughPreview: null, dashT: 0, passThrough: false, cam: CAM_MIN, camY: MIDY, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, aimY: null, aimDir: 1, aimLock: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
       };
       kickoff(0);
     }
@@ -413,26 +418,46 @@
     }
 
     // スルーパスの行き先と受け手を選ぶ（ボールの位置から、向いた方向の先）。だれも着けなければ null
-    function throughPlan(p) {
+    function throughPlan(p, lob = false) {
+      return throughSearch(p, lob, true) || throughSearch(p, lob, false);
+    }
+    // strict: 相手の条件（落ちる場所のそば・通り道・先に着く）も見る。false なら、味方が着けるかだけ
+    function throughSearch(p, lob, strict) {
       const b = M.ball, f = 0.972, dir = attackDir(p.team);
+      const minD = lob ? THROUGH.lobMin : THROUGH.minDist, maxD = lob ? THROUGH.lobMax : THROUGH.maxDist;
       let best = null;
-      for (let L = THROUGH.minDist; L <= THROUGH.maxDist; L += THROUGH.step) {
+      for (let L = minD; L <= maxD; L += THROUGH.step) {
         const tx = b.x + p.fx * L, ty = b.y + p.fy * L;
         if (tx < LX0 + 10 || tx > LX1 - 10 || ty < LY0 + 8 || ty > LY1 - 8) break;
-        const v = Math.min(13, THROUGH.arrive + L * (1 - f));             // 着いたときに arrive くらい残る強さ
-        const n = Math.log(1 - (L * (1 - f)) / v) / Math.log(f);          // ボールが着くまでのフレーム数
+        let v, n;
+        if (lob) {
+          const vz = clamp(3 + L * 0.005, 3.2, 5);  // lobTo と同じ高さ
+          n = (2 * vz) / GRAVITY;                     // 空中にいるフレーム数（落ちたところで受ける）
+          v = 0;
+        } else {
+          v = Math.min(13, THROUGH.arrive + L * (1 - f));         // 着いたときに arrive くらい残る強さ
+          n = Math.log(1 - (L * (1 - f)) / v) / Math.log(f);      // ボールが着くまでのフレーム数
+        }
         const foe = opennessAt(tx, ty, p.team);
-        if (foe < THROUGH.foeAvoid) continue;                              // 相手のすぐそばには出さない
-        const lane = laneClear(b.x, b.y, tx, ty, p.team, true);
-        if (lane < THROUGH.lane) continue;                                 // 通り道に相手がいる
-        const tFoe = foe / THROUGH.foeRun;                                 // 一番近い相手が着くまで
+        const lane = lob ? 60 : laneClear(b.x, b.y, tx, ty, p.team, true);
+        // 相手のキーパーが取れるところ（ゴール前）には、ゆるめた条件でも出さない
+        const gk = gkOf(1 - p.team);
+        if (gk && Math.hypot(gk.x - tx, gk.y - ty) < THROUGH.keeperAvoid) continue;
+        if (strict) {
+          if (foe < (lob ? THROUGH.lobFoeAvoid : THROUGH.foeAvoid)) continue; // 相手のすぐそばには出さない
+          if (lane < THROUGH.lane) continue;                                   // 通り道に相手がいる（転がすときだけ）
+        }
+        const tFoe = foe / THROUGH.foeRun;                                     // 一番近い相手が着くまで
         for (const m of fieldOf(p.team)) {
           if (m === p) continue;
           const tm = Math.hypot(m.x - tx, m.y - ty) / THROUGH.run;
-          if (tm > n + THROUGH.slack) continue;
-          if (tFoe + THROUGH.foeMargin < Math.max(tm, n)) continue;          // 相手のほうが先に着く
-          const score = L * 0.4 + (tx - b.x) * dir * 0.5 + Math.min(foe, 90) * 0.8 + Math.min(lane, 60) * 0.5 - Math.abs(tm - n) * 1.2;
-          if (!best || score > best.score) best = { m, x: tx, y: ty, v, score };
+          if (tm > n + (strict ? THROUGH.slack : THROUGH.relaxSlack)) continue;
+          if (strict && tFoe + THROUGH.foeMargin < Math.max(tm, n)) continue;   // 相手のほうが先に着く
+          // 安全な場所が見つかるときは前へ進むほどよい。ゆるめた条件では、近くて相手から離れた場所を選ぶ
+          const score = strict
+            ? L * 0.15 + (tx - b.x) * dir * 0.3 + Math.min(foe, 90) * 0.8 + Math.min(lane, 60) * 0.5 - Math.abs(tm - n) * 1.2
+            : -L * 0.2 + Math.min(foe, 90) * 1.5 + Math.min(lane, 60) * 0.8 - Math.abs(tm - n) * 2;
+          if (!best || score > best.score) best = { m, x: tx, y: ty, v, score, lob, safe: strict };
         }
       }
       return best;
@@ -551,6 +576,8 @@
         return;
       }
       c.boost = cmd.dashHeld && !c.tired ? Math.min(1, c.boost + DASH.rise) : Math.max(0, c.boost - DASH.fall);
+      // ダッシュをやめても、THROUGH.grace フレームのあいだは B でスルーパスになる
+      M.dashT = cmd.dashHeld ? THROUGH.grace : Math.max(0, M.dashT - 1);
       let ax = cmd.ax, ay = cmd.ay;
       const n = Math.hypot(ax, ay);
       if (n > 1) { ax /= n; ay /= n; }
@@ -600,7 +627,7 @@
       }
       // B: ボールを持っていれば押した長さでパスの種類を決める（離したときに蹴る）。持っていなければ選手の切り替え
       if (cmd.bPressed) {
-        if (b.owner === c) M.passCharge = 0;
+        if (b.owner === c) { M.passCharge = 0; M.passThrough = M.dashT > 0; } // ダッシュ中か、やめてすぐなら、このパスはスルーパス
         else {
           const m = nearestField(0, b, c);
           if (m) setControlled(m); // B で切り替え
@@ -613,8 +640,10 @@
       if (cmd.bReleased && M.passCharge >= 0) {
         if (b.owner === c) {
           // ダッシュしながらならスルーパス（行き先が決まらなければ、いつものパス）
-          if (cmd.dashHeld && M.throughPreview) throughPass(c, M.throughPreview, M.passCharge >= LOB_HOLD);
-          else humanPass(c, M.passCharge >= LOB_HOLD);
+          const lob = M.passCharge >= LOB_HOLD;
+          const plan = M.passThrough ? throughPlan(c, lob) : null;
+          if (plan) throughPass(c, plan, lob);
+          else humanPass(c, lob);
         }
         M.passCharge = -1;
       }
@@ -646,7 +675,10 @@
       const cc = M.controlled;
       M.passPreview = b.owner === cc ? facingMate(cc, M.passPreview) : null;
       // スルーパスの予告（ボールを持ってダッシュしている間だけ）
-      M.throughPreview = b.owner === cc && !cc.isGK && cmd.dashHeld ? throughPlan(cc) : null;
+      // ダッシュ中・やめてすぐ・スルーパスの B を押している間は予告を出す（浮き玉の長さまで押したら、浮き玉の行き先）
+      const thr = b.owner === cc && !cc.isGK && (M.passCharge >= 0 ? M.passThrough : M.dashT > 0);
+      M.throughPreview = thr ? throughPlan(cc, M.passCharge >= LOB_HOLD) : null;
+      if (b.owner !== cc) M.passThrough = false;
       // シュートのねらい（持っていて、ゴールに近いときだけ）。▼は左右に一定の速さで行ったり来たりし、A を押している間は止まる
       if (b.owner === cc && Math.abs(oppGoalX(cc.team) - cc.x) <= SHOT_AIM_RANGE) {
         const lim = GOAL_HALF * AIM_SWEEP.edge;
@@ -1068,6 +1100,8 @@
       if (b.z > 0) b.vz -= 0.25;
       if (b.z <= 0) {
         b.z = 0;
+        // 浮き玉のスルーパスは、落ちたところで勢いが死ぬ（× のあたりに止まり、走り込んだ味方が拾える）
+        if (b.through && b.land && b.vz < -1.2) { b.vx *= THROUGH.lobLandKeep; b.vy *= THROUGH.lobLandKeep; b.land = null; }
         if (b.vz < -1.2) { b.vz = -b.vz * 0.45; SFX.bounce(); } else b.vz = 0;
       }
       const f = b.z > 0 ? 0.993 : 0.972;
@@ -1980,7 +2014,7 @@
       // パス先がいなければ、蹴り出す向きに短い矢印
       if (M.controlled && b.owner === M.controlled && k.phase === "playing" && M.throughPreview) {
         // スルーパスの予告: 行き先に水色の ×、走り込む味方に水色の輪、その間を点線でつなぐ
-        const tp = M.throughPreview, lob = M.passCharge >= LOB_HOLD;
+        const tp = M.throughPreview, lob = tp.lob;
         const tq = P(tp.x, tp.y, cam), mq = P(tp.m.x, tp.m.y, cam);
         ctx.save();
         ctx.strokeStyle = lob ? "#a8f4ff" : "#3bd1ff"; ctx.lineWidth = 2;
@@ -1991,7 +2025,8 @@
         const r = 6 * tq.s;
         ctx.lineWidth = 3;
         ctx.beginPath(); ctx.moveTo(tq.x - r, tq.y - r); ctx.lineTo(tq.x + r, tq.y + r); ctx.moveTo(tq.x + r, tq.y - r); ctx.lineTo(tq.x - r, tq.y + r); ctx.stroke();
-        if (k.retro.blinkOn(12)) { ctx.font = k.retro.font(8); ctx.textAlign = "center"; ctx.fillStyle = ctx.strokeStyle; ctx.fillText("THROUGH", tq.x, tq.y - 10 * tq.s); }
+        if (lob) { ctx.beginPath(); ctx.ellipse(tq.x, tq.y, 11 * tq.s, 5 * tq.s, 0, 0, Math.PI * 2); ctx.stroke(); } // 浮き玉は落ちる場所に輪も
+        if (k.retro.blinkOn(12)) { ctx.font = k.retro.font(8); ctx.textAlign = "center"; ctx.fillStyle = ctx.strokeStyle; ctx.fillText(lob ? "LOB THROUGH" : "THROUGH", tq.x, tq.y - 10 * tq.s); }
         ctx.restore();
       } else if (M.controlled && b.owner === M.controlled && k.phase === "playing") {
         const lob = M.passCharge >= LOB_HOLD;

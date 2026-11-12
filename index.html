@@ -88,6 +88,12 @@
     const KEEPER_HOLD_MIN = 40, KEEPER_HOLD_MAX = 170; // キーパーがボールを持つ長さ（フレーム）
     // 操作中の選手のシュートの速さ: base + 溜め（0〜1）× charge
     const SHOT = { base: 7.5, charge: 6 };
+    // ゴールの演出（CNP が決めたとき。忍者チームのときは控えめ: 下のスタンドだけ・紙吹雪なし・揺れなし）
+    //   flash: 白いフラッシュのフレーム数（濃さは flash / flashDiv）、shake: 画面の揺れのフレーム数と振れ幅（px）、
+    //   cheerHop: 観客が跳ぶ高さ（px）、confetti: 紙吹雪の数、gather: 味方が決めた選手へ寄る速さ
+    const GOAL_FX = { flash: 28, flashEnemy: 20, flashDiv: 45, shake: 12, shakeAmp: 4, cheerHop: 5, confetti: 30, gather: 2.0 };
+    // 点数の表示（+50 など）: 出ている長さ（フレーム）、上へ動く速さ、同時に出す数の上限
+    const POPUP = { life: 40, lifeBig: 70, rise: 0.6, max: 4 };
     // シュートのねらいの矢印: ボールを持って相手ゴールの方を向き、ゴールまで SHOT_AIM_RANGE 以内のときだけ出す
     const SHOT_AIM_RANGE = 420;
     // キーパーのキャッチの確率（ボールの速さ別: midSpeed 未満は catchSlow、fastSpeed 未満は catchMid、それ以上は catchFast）と、
@@ -143,7 +149,7 @@
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
         ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null, mood: "normal", moodT: 0 },
-        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
+        cam: CAM_MIN, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
       };
       kickoff(0);
     }
@@ -162,6 +168,7 @@
     }
 
     function kickoff(team) {
+      M.confetti = [];
       const b = M.ball;
       Object.assign(b, { x: MIDX, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, passTarget: null, gkIgnore: 0 });
       for (const p of M.players) {
@@ -336,9 +343,14 @@
     function stepMatch(cmd) {
       M.flash = Math.max(0, M.flash - 1);
       if (M.switchFlash > 0) M.switchFlash--;
+      if (M.shake > 0) M.shake--;
+      stepPopups();
       stepRef();
       if (M.freeze > 0) {
-        if (M.freezeKind === "goal") stepBall(); // ゴールネットに吸い込まれる余韻
+        if (M.freezeKind === "goal") {
+          stepBall(); // ゴールネットに吸い込まれる余韻
+          stepGoalParty();
+        }
         // キックオフは、止まっている最後に審判が笛を吹いて始まる
         if (M.freezeKind === "kickoff" && M.freeze === 22) { setPose("whistle", 24); SFX.whistle(false); }
         if (--M.freeze === 0) {
@@ -932,20 +944,64 @@
       if (b.y < LY0 - 2 || b.y > LY1 + 2) return throwIn(1 - b.lastTeam);
     }
 
+    // 点を足して、その場所（ワールド座標）に「+n」を出す。big は大きな文字（ゴール）
+    function addPoints(n, x, y, big = false) {
+      kit.score.add(n);
+      M.popups.push({ text: "+" + n, x, y, t: big ? POPUP.lifeBig : POPUP.life, life: big ? POPUP.lifeBig : POPUP.life, big });
+      // 同時に出すのは多くて POPUP.max 個（古いものから消す。ゴールの大きな文字は残す）
+      while (M.popups.length > POPUP.max) {
+        const i = M.popups.findIndex((q) => !q.big);
+        M.popups.splice(i >= 0 ? i : 0, 1);
+      }
+    }
+    function stepPopups() {
+      for (const q of M.popups) q.t--;
+      M.popups = M.popups.filter((q) => q.t > 0);
+    }
+
     function scoreGoal(team) {
       M.goals[team]++;
       M.kickoffTeam = 1 - team;
       M.ball.owner = null;
       const k = M.lastKicker;
+      M.goalTeam = team;
+      M.scorer = k && k.team === team && !k.isGK ? k : null;
       if (team === 0) {
-        kit.score.add(1000);
+        addPoints(1000, LX1 - 30, M.ball.y, true);
         // 決めた CNP を記録（ランキングのロスターに出る）
-        if (k && k.team === 0 && k.ch && kit.cnp.run.collect(k.ch.no)) kit.score.add(300);
+        if (k && k.team === 0 && k.ch && kit.cnp.run.collect(k.ch.no)) addPoints(300, LX1 - 80, M.ball.y);
+        M.flash = GOAL_FX.flash;
+        if (!kit.retro.reduceMotion) M.shake = GOAL_FX.shake; // 画面効果を減らす設定のときは揺らさない
+        // 紙吹雪（画面の上から、フィールドの幅に）
+        M.confetti = Array.from({ length: GOAL_FX.confetti }, () => ({
+          x: FIELD_LEFT + rnd() * FH, y: -10 - rnd() * 80, vx: (rnd() - 0.5) * 0.8, vy: 2.2 + rnd() * 1.6,
+          c: CROWD[Math.floor(rnd() * CROWD.length)], s: 3 + Math.floor(rnd() * 2), ph: rnd() * 6,
+        }));
+      } else {
+        M.flash = GOAL_FX.flashEnemy;
+        M.confetti = [];
       }
-      M.flash = 20;
       freeze(160, "goal", "GOAL!!");
       refJudge("goal");
       SFX.goal(team === 0);
+    }
+
+    // ゴールの後: CNP が決めたら、ほかのフィールドプレーヤーが決めた選手のまわりへ寄ってくる。紙吹雪が落ちる
+    function stepGoalParty() {
+      for (const f of M.confetti) { f.x += f.vx + Math.sin(f.ph + f.y * 0.05) * 0.4; f.y += f.vy; }
+      M.confetti = M.confetti.filter((f) => f.y < H + 10);
+      // カメラは、決めた側のスタンド（跳んでいる観客）が見えるところまでゆっくり寄る
+      M.cam += ((M.goalTeam === 0 ? CAM_MAX : CAM_MIN) - M.cam) * 0.06;
+      const sc = M.scorer;
+      if (M.goalTeam !== 0 || !sc) return;
+      let i = 0;
+      for (const p of fieldOf(0)) {
+        if (p === sc) { p.tvx = p.tvy = 0; movePlayer(p); continue; }
+        const a = (i++ / 3) * Math.PI * 2;
+        seek(p, sc.x + Math.cos(a) * 18, sc.y + Math.sin(a) * 18, GOAL_FX.gather);
+        movePlayer(p);
+      }
+      separate();
     }
 
     function goalKick(team) {
@@ -1163,7 +1219,9 @@
     // ゴール裏のスタンド（観客のドット）と看板。ゴールが決まると観客が跳ねる
     function drawStands(ctx, cam) {
       const x0 = FIELD_LEFT, w = FH;
-      const cheer = M && M.freeze > 0 && M.freezeKind === "goal";
+      // ゴールの後は、決めた側のスタンド（CNP なら画面の上、忍者なら下）の観客がいっせいに跳んで手を上げる
+      const cheerEnd = M && M.freeze > 0 && M.freezeKind === "goal" ? (M.goalTeam === 0 ? 1 : 0) : -1;
+      const jump = -Math.round(Math.abs(Math.sin(renderFrame * 0.22)) * GOAL_FX.cheerHop);
       for (const end of [0, 1]) {
         const edge = toSY(end === 1 ? FW : 0, cam); // スタンドとトラックの境目
         const dir = end === 1 ? -1 : 1;             // スタンドが広がる向き
@@ -1178,11 +1236,13 @@
           for (let i = 0; i * cell < w; i++) {
             const h = (i * 73856093) ^ (j * 19349663) ^ (end * 83492791);
             const col = CROWD[Math.abs(h) % CROWD.length];
-            const hop = cheer && ((i + j + Math.floor(renderFrame / 6)) & 1) ? -2 : 0;
+            const cheer = end === cheerEnd;
+            const hop = cheer ? jump : 0;
             ctx.fillStyle = col;
             ctx.fillRect(x0 + i * cell + 1, y + hop, 4, 4);
             ctx.fillStyle = "#f2d3b0";
             ctx.fillRect(x0 + i * cell + 1, y + hop - 3, 4, 3);
+            if (cheer && hop < -1) { ctx.fillRect(x0 + i * cell, y + hop - 6, 1, 3); ctx.fillRect(x0 + i * cell + 5, y + hop - 6, 1, 3); } // 上げた手
           }
         }
         // 看板（スタンドの手前）
@@ -1554,6 +1614,12 @@
       }
 
       const cam = Math.round(M.cam);
+      // ゴールの直後は画面（フィールド）を数フレーム揺らす。だんだん小さく。左右の余白の文字は揺らさない
+      ctx.save();
+      if (M.shake > 0) {
+        const amp = GOAL_FX.shakeAmp * (M.shake / GOAL_FX.shake);
+        ctx.translate(Math.round((rnd() * 2 - 1) * amp), Math.round((rnd() * 2 - 1) * amp));
+      }
       drawField(ctx, cam);
       drawGoal(ctx, cam, 1);
       k.retro.crt();
@@ -1694,8 +1760,28 @@
           }
         }
       }
+      // 紙吹雪
+      for (const f of M.confetti) {
+        ctx.fillStyle = f.c;
+        const w = Math.abs(Math.sin(f.ph + renderFrame * 0.2)) * f.s + 1; // くるくる回って見える
+        ctx.fillRect(Math.round(f.x), Math.round(f.y), Math.round(w), f.s);
+      }
+      // 点数（+50 など）: 上へふわっと動いて、最後は薄くなって消える
+      for (const q of M.popups) {
+        const age = q.life - q.t;
+        const px = toSX(q.y), py = toSY(q.x, cam) - 30 - age * POPUP.rise;
+        const a = Math.min(1, q.t / 15);
+        ctx.save();
+        ctx.font = k.retro.font(q.big ? 22 : 11); ctx.textAlign = "center";
+        ctx.lineWidth = q.big ? 4 : 3; ctx.strokeStyle = `rgba(4,6,12,${0.8 * a})`;
+        ctx.strokeText(q.text, px, py);
+        ctx.fillStyle = k.retro.alpha(c.gold, a);
+        ctx.fillText(q.text, px, py);
+        ctx.restore();
+      }
+      ctx.restore(); // 揺れはここまで
       if (M.flash > 0 && M.freezeKind === "goal") {
-        ctx.fillStyle = `rgba(255,255,255,${M.flash / 60})`; ctx.fillRect(0, 0, W, H);
+        ctx.fillStyle = `rgba(255,255,255,${M.flash / GOAL_FX.flashDiv})`; ctx.fillRect(0, 0, W, H);
       }
 
       // 左右の余白（縦画面の筐体の外側）

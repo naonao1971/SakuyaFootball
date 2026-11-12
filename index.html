@@ -63,10 +63,19 @@
     const CAMY_MIN = FH / (2 * VIEW_ZOOM) - 12, CAMY_MAX = FH - FH / (2 * VIEW_ZOOM) + 12;
     const CAM_LEAD = 14; // ボールが進む方向の先を多めに映す（ボールの速さ × この数）
     const TITLE_CAM_SWING = MIDX - (H / 2 - 110); // タイトル画面（拡大しない）でカメラが上下する幅
-    const VIEW = { camY: MIDY }; // 今のフレームの横のカメラ位置（描画のときだけ使う）
+    // 斜め上からの見下ろし: 画面の奥（上）ほど横に狭く・小さく、手前（下）ほど広く・大きく描く。
+    // 画面に見えている上の端で (1 - VIEW_TILT) 倍、下の端で (1 + VIEW_TILT) 倍。0 にすると真上から
+    const VIEW_TILT = 0.18;
+    // 今のフレームの横のカメラ位置と、傾きの基準にする「見えている高さの半分」（拡大前の座標。描画のときだけ使う）
+    const VIEW = { camY: MIDY, hv: H / (2 * VIEW_ZOOM) };
     // ワールド → 画面（cam は画面の中央に来るワールドの x）
-    const toSX = (y) => VCX + (y - VIEW.camY);
     const toSY = (x, cam) => H / 2 - (x - cam);
+    // 画面の高さ sy のところの大きさの倍率（奥ほど小さい）
+    const persp = (sy) => 1 + (VIEW_TILT * (sy - VCY)) / VIEW.hv;
+    // ワールドの横位置 y を、画面の高さ sy のところで画面の x にする（奥ほど中央に寄る）
+    const toSX = (y, sy) => VCX + (y - VIEW.camY) * persp(sy);
+    // ワールド (x, y) → 画面の位置と大きさの倍率
+    const P = (wx, wy, cam) => { const sy = toSY(wx, cam); return { x: toSX(wy, sy), y: sy, s: persp(sy) }; };
     const MATCH_FRAMES = 120 * 60;             // 試合時間（2分）
     const TEAM_NAMES = ["CNP", "NINJA"];
     // チームの色（芝とユニフォームはこのゲーム固有の絵なので、ここにまとめる）
@@ -1354,114 +1363,136 @@
     const TRACK = "#b4793c";
     const CROWD = ["#e8c56a", "#ff2d9b", "#2f8fff", "#e0333d", "#f4f4f4", "#3bd16f", "#7c8ba6"];
 
+    // フィールド。斜めの見下ろしで、線や芝は画面の位置に直してから多角形で描く
     function drawField(ctx, cam) {
-      ctx.save();
-      // ワールド (x, y) → 画面 (toSX(y), H/2 + cam - x)（拡大は render がこの外でかける）
-      ctx.transform(0, -1, 1, 0, toSX(0), H / 2 + cam);
+      const pt = (wx, wy) => { const q = P(wx, wy, cam); return [q.x, q.y]; };
+      const poly = (pts, fill) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); if (fill) ctx.fill(); else ctx.stroke(); };
+      const quad = (x0, y0, x1, y1, fill) => poly([pt(x0, y0), pt(x0, y1), pt(x1, y1), pt(x1, y0)], fill);
+      const arc = (cx, cy, r, a0, a1) => {
+        ctx.beginPath();
+        const n = Math.max(6, Math.ceil(((a1 - a0) * r) / 6));
+        for (let i = 0; i <= n; i++) { const a = a0 + ((a1 - a0) * i) / n; const [x, y] = pt(cx + Math.cos(a) * r, cy + Math.sin(a) * r); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+        ctx.stroke();
+      };
+      const dot = (wx, wy) => { const q = P(wx, wy, cam); ctx.fillRect(q.x - 2 * q.s, q.y - 2 * q.s, 4 * q.s, 4 * q.s); };
       ctx.fillStyle = TRACK;
-      ctx.fillRect(0, 0, FW, FH);
+      quad(0, 0, FW, FH, true);
       const stripe = 60;
       for (let x = 20; x < FW - 20; x += stripe) {
         ctx.fillStyle = GRASS[Math.floor(x / stripe) & 1];
-        ctx.fillRect(x, 10, Math.min(stripe, FW - 20 - x), FH - 20);
+        quad(x, 10, Math.min(x + stripe, FW - 20), FH - 10, true);
       }
-      ctx.strokeStyle = LINE; ctx.lineWidth = 2;
-      ctx.strokeRect(LX0, LY0, LX1 - LX0, LY1 - LY0);
-      ctx.beginPath(); ctx.moveTo(MIDX, LY0); ctx.lineTo(MIDX, LY1); ctx.stroke();
-      ctx.beginPath(); ctx.arc(MIDX, MIDY, 60, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = LINE; ctx.lineWidth = 2; ctx.lineJoin = "round";
+      quad(LX0, LY0, LX1, LY1);
+      poly([pt(MIDX, LY0), pt(MIDX, LY1)]);
+      arc(MIDX, MIDY, 60, 0, Math.PI * 2);
       ctx.fillStyle = LINE;
-      ctx.fillRect(MIDX - 2, MIDY - 2, 4, 4);
+      dot(MIDX, MIDY);
       for (const side of [0, 1]) {
         const gx = side === 0 ? LX0 : LX1, d = side === 0 ? 1 : -1;
-        ctx.strokeRect(Math.min(gx, gx + d * 130), MIDY - 120, 130, 240);
-        ctx.strokeRect(Math.min(gx, gx + d * 46), MIDY - 72, 46, 144);
-        ctx.fillRect(gx + d * 96 - 2, MIDY - 2, 4, 4);
+        quad(gx, MIDY - 120, gx + d * 130, MIDY + 120);
+        quad(gx, MIDY - 72, gx + d * 46, MIDY + 72);
+        dot(gx + d * 96, MIDY);
         // ペナルティアーク（エリアの外に出る部分だけ）
         const a = Math.acos(34 / 56);
-        ctx.beginPath();
-        if (side === 0) ctx.arc(gx + 96, MIDY, 56, -a, a);
-        else ctx.arc(gx - 96, MIDY, 56, Math.PI - a, Math.PI + a);
-        ctx.stroke();
+        if (side === 0) arc(gx + 96, MIDY, 56, -a, a);
+        else arc(gx - 96, MIDY, 56, Math.PI - a, Math.PI + a);
       }
-      // コーナーアーク（線の内側の4分の1だけ見せる）
-      ctx.save();
-      ctx.beginPath(); ctx.rect(LX0, LY0, LX1 - LX0, LY1 - LY0); ctx.clip();
-      for (const gx of [LX0, LX1]) for (const cy of [LY0, LY1]) {
-        ctx.beginPath(); ctx.arc(gx, cy, 10, 0, Math.PI * 2); ctx.stroke();
+      // コーナーアーク（線の内側の4分の1だけ）
+      for (const [gx, d] of [[LX0, 1], [LX1, -1]]) for (const [cy, e] of [[LY0, 1], [LY1, -1]]) {
+        const a0 = d > 0 ? (e > 0 ? 0 : -Math.PI / 2) : e > 0 ? Math.PI / 2 : Math.PI;
+        arc(gx, cy, 10, a0, a0 + Math.PI / 2);
       }
-      ctx.restore();
-      ctx.restore();
       drawStands(ctx, cam);
     }
 
-    // ゴール裏のスタンド（観客のドット）と看板。ゴールが決まると観客が跳ねる
+    // ゴール裏のスタンド（観客のドット）と看板。ゴールが決まると観客が跳ねる。奥（上）のスタンドほど小さく描く
     function drawStands(ctx, cam) {
-      const x0 = toSX(0), w = FH;
       // ゴールの後は、決めた側のスタンド（CNP なら画面の上、忍者なら下）の観客がいっせいに跳んで手を上げる
       const cheerEnd = M && M.freeze > 0 && M.freezeKind === "goal" ? (M.goalTeam === 0 ? 1 : 0) : -1;
-      const jump = -Math.round(Math.abs(Math.sin(renderFrame * 0.22)) * GOAL_FX.cheerHop);
+      const jumpBase = Math.abs(Math.sin(renderFrame * 0.22)) * GOAL_FX.cheerHop;
+      const rowL = (y) => toSX(0, y), rowR = (y) => toSX(FH, y);
       for (const end of [0, 1]) {
         const edge = toSY(end === 1 ? FW : 0, cam); // スタンドとトラックの境目
         const dir = end === 1 ? -1 : 1;             // スタンドが広がる向き
         const yA = end === 1 ? edge - 220 : edge, yB = end === 1 ? edge : edge + 220;
-        if (yB < 0 || yA > H) continue;
+        if (yB < -40 || yA > H + 40) continue;
         ctx.fillStyle = "#1b1730";
-        ctx.fillRect(x0, yA, w, yB - yA);
+        ctx.beginPath(); ctx.moveTo(rowL(yA), yA); ctx.lineTo(rowR(yA), yA); ctx.lineTo(rowR(yB), yB); ctx.lineTo(rowL(yB), yB); ctx.closePath(); ctx.fill();
         const cell = 7;
         for (let j = 1; j * cell < 220; j++) {
           const y = edge + dir * j * cell;
-          if (y < -cell || y > H + cell) continue;
-          for (let i = 0; i * cell < w; i++) {
+          if (y < -cell * 2 || y > H + cell * 2) continue;
+          const f = persp(y), x0 = rowL(y), cw = cell * f;
+          const hop = end === cheerEnd ? -Math.round(jumpBase * f) : 0;
+          for (let i = 0; i * cell < FH; i++) {
             const h = (i * 73856093) ^ (j * 19349663) ^ (end * 83492791);
-            const col = CROWD[Math.abs(h) % CROWD.length];
-            const cheer = end === cheerEnd;
-            const hop = cheer ? jump : 0;
-            ctx.fillStyle = col;
-            ctx.fillRect(x0 + i * cell + 1, y + hop, 4, 4);
+            const cx = x0 + i * cw;
+            ctx.fillStyle = CROWD[Math.abs(h) % CROWD.length];
+            ctx.fillRect(cx + f, y + hop, 4 * f, 4 * f);
             ctx.fillStyle = "#f2d3b0";
-            ctx.fillRect(x0 + i * cell + 1, y + hop - 3, 4, 3);
-            if (cheer && hop < -1) { ctx.fillRect(x0 + i * cell, y + hop - 6, 1, 3); ctx.fillRect(x0 + i * cell + 5, y + hop - 6, 1, 3); } // 上げた手
+            ctx.fillRect(cx + f, y + hop - 3 * f, 4 * f, 3 * f);
+            if (hop < -1) { ctx.fillRect(cx, y + hop - 6 * f, f, 3 * f); ctx.fillRect(cx + 5 * f, y + hop - 6 * f, f, 3 * f); } // 上げた手
           }
         }
         // 看板（スタンドの手前）
-        const by = end === 1 ? edge - 2 : edge + 2;
         const bh = 18;
-        const top = end === 1 ? by - bh : by;
-        ctx.fillStyle = "#0b1a3a"; ctx.fillRect(x0, top, w, bh);
+        const top = end === 1 ? edge - 2 - bh : edge + 2;
+        const fm = persp(top + bh / 2), xl = rowL(top + bh / 2), bwAll = rowR(top + bh / 2) - xl;
         const boards = [["SAKUYA", "#e8c56a"], ["FOOTBALL", "#f4f4f4"], ["CNP", "#ff2d9b"], ["NAOBLOCK", "#2f8fff"]];
-        const bw = w / boards.length;
+        const bw = bwAll / boards.length;
         ctx.save();
-        ctx.font = '10px "Press Start 2P", monospace'; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.font = `${Math.round(10 * fm)}px "Press Start 2P", monospace`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
         boards.forEach(([t, col], i) => {
-          ctx.fillStyle = i & 1 ? "#14234a" : "#0b1a3a"; ctx.fillRect(x0 + i * bw, top, bw, bh);
-          ctx.fillStyle = col; ctx.fillText(t, x0 + i * bw + bw / 2, top + bh / 2 + 1);
+          ctx.fillStyle = i & 1 ? "#14234a" : "#0b1a3a"; ctx.fillRect(xl + i * bw, top, bw + 0.5, bh);
+          ctx.fillStyle = col; ctx.fillText(t, xl + i * bw + bw / 2, top + bh / 2 + 1);
         });
         ctx.restore();
       }
     }
 
-    // ゴール。side 1 が画面の上（忍者チームのゴール）、side 0 が下（CNP チームのゴール）
+    // ゴール。side 1 が画面の上（忍者チームのゴール）、side 0 が下（CNP チームのゴール）。
+    // ポストとクロスバーは地面から立てて描く。バーの高さは試合の BAR_Z と同じ（ボールの高さの描き方とそろえる）
     function drawGoal(ctx, cam, side) {
-      const yl = toSY(side === 0 ? LX0 : LX1, cam);
-      const d = side === 0 ? 1 : -1;                  // ネットが広がる向き（画面の上下）
-      const xa = toSX(GY0), xb = toSX(GY1);
-      const y0 = Math.min(yl, yl + d * GOAL_DEPTH);
-      if (y0 > H + 10 || y0 + GOAL_DEPTH < -10) return;
-      ctx.fillStyle = "rgba(255,255,255,0.12)";
-      ctx.fillRect(xa, y0, xb - xa, GOAL_DEPTH);
+      const gx = side === 0 ? LX0 : LX1, gb = side === 0 ? LX0 - GOAL_DEPTH : LX1 + GOAL_DEPTH;
+      const FL = P(gx, GY0, cam), FR = P(gx, GY1, cam), BL = P(gb, GY0, cam), BR = P(gb, GY1, cam);
+      if (Math.min(FL.y, BL.y) - BAR_Z * 1.5 > H + 10 || Math.max(FL.y, BL.y) < -10) return;
+      const up = (q, h) => [q.x, q.y - h * q.s];
+      const hF = BAR_Z, hB = BAR_Z * 0.6; // 前（ゴールライン）と奥のネットの高さ
+      const fl = [FL.x, FL.y], fr = [FR.x, FR.y], bl = [BL.x, BL.y], br = [BR.x, BR.y];
+      const flt = up(FL, hF), frt = up(FR, hF), blt = up(BL, hB), brt = up(BR, hB);
+      const poly = (pts) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); };
+      // ネット（奥の面・天井・横の面）
+      ctx.fillStyle = "rgba(255,255,255,0.13)";
+      for (const face of [[bl, br, brt, blt], [flt, frt, brt, blt], [fl, flt, blt, bl], [fr, frt, brt, br]]) { poly(face); ctx.fill(); }
       ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.lineWidth = 1;
-      for (let x = xa; x <= xb; x += 6) { ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y0 + GOAL_DEPTH); ctx.stroke(); }
-      for (let y = y0; y <= y0 + GOAL_DEPTH; y += 6) { ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke(); }
-      // ポストとクロスバー（高さを少し上にずらして立体に見せる）
-      ctx.fillStyle = "#ffffff";
-      ctx.fillRect(xa - 2, yl - 14, 4, 16);
-      ctx.fillRect(xb - 2, yl - 14, 4, 16);
-      ctx.fillRect(xa - 2, yl - 14, xb - xa + 4, 3);
+      const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      const grid = (a, b, c, d, nu, nv) => { // 四角い面 a-b-c-d に網目を張る
+        for (let i = 0; i <= nu; i++) { const t = i / nu; const p0 = lerp(a, b, t), p1 = lerp(d, c, t); ctx.beginPath(); ctx.moveTo(...p0); ctx.lineTo(...p1); ctx.stroke(); }
+        for (let i = 0; i <= nv; i++) { const t = i / nv; const p0 = lerp(a, d, t), p1 = lerp(b, c, t); ctx.beginPath(); ctx.moveTo(...p0); ctx.lineTo(...p1); ctx.stroke(); }
+      };
+      grid(bl, br, brt, blt, 16, 3);
+      grid(blt, brt, frt, flt, 16, 4);
+      // ポストとクロスバー（白く太く）
+      ctx.strokeStyle = "#ffffff"; ctx.lineCap = "round";
+      ctx.lineWidth = 3 * FL.s;
+      ctx.beginPath(); ctx.moveTo(...fl); ctx.lineTo(...flt); ctx.lineTo(...frt); ctx.lineTo(...fr); ctx.stroke();
+      ctx.lineWidth = 1.5 * BL.s;
+      ctx.beginPath(); ctx.moveTo(...flt); ctx.lineTo(...blt); ctx.lineTo(...brt); ctx.lineTo(...frt); ctx.stroke();
+      ctx.lineCap = "butt";
     }
 
     function drawPlayer(ctx, p, k, cam) {
-      const x = Math.round(toSX(p.y)), y = Math.round(toSY(p.x, cam));
-      if (y < -40 || y > H + 30) return;
+      const q = P(p.x, p.y, cam);
+      if (q.y < -50 || q.y > H + 40) return;
+      // 奥ほど小さく: 足もとを中心に倍率をかけて、いつもの大きさで描く
+      ctx.save();
+      ctx.translate(q.x, q.y); ctx.scale(q.s, q.s); ctx.translate(-q.x, -q.y);
+      drawPlayerBody(ctx, p, k, Math.round(q.x), Math.round(q.y));
+      ctx.restore();
+    }
+
+    function drawPlayerBody(ctx, p, k, x, y) {
       const shirt = p.isGK ? SHIRT[p.team].gk : SHIRT[p.team].field;
       ctx.fillStyle = "rgba(0,0,0,0.35)";
       ctx.beginPath(); ctx.ellipse(x, y + 2, 9, 3.5, 0, 0, Math.PI * 2); ctx.fill();
@@ -1617,7 +1648,7 @@
 
     function drawRef(ctx, k, cam) {
       const r = M.ref;
-      const x = toSX(r.y), y = toSY(r.x, cam);
+      const q = P(r.x, r.y, cam), x = q.x, y = q.y;
       if (y < -60 || y > H + 20) return;
       let pose = r.pose;
       if (pose === "idle" && Math.hypot(r.vx, r.vy) > 0.4) pose = "run";
@@ -1626,7 +1657,7 @@
         const wx = r.point.x - r.x, wy = r.point.y - r.y, n = Math.hypot(wx, wy) || 1;
         pdx = wy / n; pdy = -wx / n;
       }
-      drawChibi(ctx, x, y, 1.4, pose, r.anim + k.frame * (pose === "fulltime" ? 1 : 0), pdx, pdy);
+      drawChibi(ctx, x, y, 1.4 * q.s, pose, r.anim + k.frame * (pose === "fulltime" ? 1 : 0), pdx, pdy);
     }
 
     // 審判の吹き出し（頭の上）
@@ -1634,14 +1665,15 @@
       const r = M.ref;
       if (!r.bubble) return;
       const half = FH / (2 * VIEW_ZOOM) - 40; // 拡大前の座標で、画面に見えている横の範囲
-      const x = clamp(toSX(r.y), VCX - half, VCX + half), y = toSY(r.x, cam) - 44;
+      const q = P(r.x, r.y, cam);
+      const x = clamp(q.x, VCX - half, VCX + half), y = q.y - 44 * q.s;
       if (y < 10 || y > H) return;
       ctx.save();
       ctx.font = k.retro.fontBody(12);
       const w = ctx.measureText(r.bubble.text).width + 14;
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(Math.round(x - w / 2), y - 16, Math.round(w), 20);
-      ctx.beginPath(); ctx.moveTo(toSX(r.y) - 4, y + 4); ctx.lineTo(toSX(r.y) + 4, y + 4); ctx.lineTo(toSX(r.y), y + 10); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(q.x - 4, y + 4); ctx.lineTo(q.x + 4, y + 4); ctx.lineTo(q.x, y + 10); ctx.fill();
       ctx.strokeStyle = k.retro.colors.magenta; ctx.lineWidth = 2;
       ctx.strokeRect(Math.round(x - w / 2) + 1, y - 15, Math.round(w) - 2, 18);
       ctx.fillStyle = "#15121c"; ctx.textAlign = "center";
@@ -1661,12 +1693,12 @@
     }
 
     function drawBall(ctx, b, cam) {
-      const x = toSX(b.y), y = toSY(b.x, cam);
+      const q = P(b.x, b.y, cam), x = q.x, y = q.y, s = q.s;
       ctx.fillStyle = "rgba(0,0,0,0.4)";
-      ctx.beginPath(); ctx.ellipse(x, y + 1, 5, 2, 0, 0, Math.PI * 2); ctx.fill();
-      const by = y - b.z - 4;
+      ctx.beginPath(); ctx.ellipse(x, y + s, 5 * s, 2 * s, 0, 0, Math.PI * 2); ctx.fill();
+      const by = y - (b.z + 4) * s; // 高さも奥ほど小さく（ゴールのバーの描き方とそろえる）
       ctx.fillStyle = "#ffffff";
-      ctx.beginPath(); ctx.arc(x, by, 4.5, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, by, 4.5 * s, 0, Math.PI * 2); ctx.fill();
       ctx.fillStyle = "#222";
       ctx.fillRect(Math.round(x) - 1, Math.round(by) - 1, 2, 2);
     }
@@ -1766,7 +1798,7 @@
       ctx.fillStyle = c.bg; ctx.fillRect(0, 0, W, H);
 
       if (k.phase === "title" || !M) {
-        VIEW.camY = MIDY; // タイトルは拡大しない
+        VIEW.camY = MIDY; VIEW.hv = H / 2; // タイトルは拡大しない
         const cam = MIDX + Math.sin(k.frame / 240) * TITLE_CAM_SWING;
         drawField(ctx, cam);
         drawGoal(ctx, cam, 1); drawGoal(ctx, cam, 0);
@@ -1815,7 +1847,7 @@
       }
 
       const cam = Math.round(M.cam);
-      VIEW.camY = Math.round(M.camY);
+      VIEW.camY = Math.round(M.camY); VIEW.hv = H / (2 * VIEW_ZOOM);
       // ゴールの直後は画面（フィールド）を数フレーム揺らす。だんだん小さく。左右の余白の文字は揺らさない
       let shx = 0, shy = 0;
       if (M.shake > 0) {
@@ -1848,7 +1880,7 @@
       drawRefBubble(ctx, k, cam);
       // ロングシュートの文字と、ボールの残像
       if (M.longShot > 0 && !b.owner) {
-        const bx = toSX(b.y), by = toSY(b.x, cam) - b.z - 4;
+        const bq = P(b.x, b.y, cam), bx = bq.x, by = bq.y - (b.z + 4) * bq.s;
         ctx.fillStyle = k.retro.alpha(c.gold, 0.35);
         for (let i = 1; i <= 4; i++) {
           ctx.beginPath(); ctx.arc(bx - b.vy * i * 1.6, by + b.vx * i * 1.6 + b.vz * i * 1.6, 4.5 - i * 0.6, 0, Math.PI * 2); ctx.fill();
@@ -1860,7 +1892,7 @@
       }
       // 浮き玉の落ちる場所
       if (b.land && b.z > 0 && !b.owner) {
-        const lx = toSX(b.land.y), ly = toSY(b.land.x, cam);
+        const lq = P(b.land.x, b.land.y, cam), lx = lq.x, ly = lq.y;
         ctx.strokeStyle = b.lastTeam === 0 ? "#3bd1ff" : k.retro.alpha(c.danger, 0.8); ctx.lineWidth = 2;
         ctx.beginPath(); ctx.moveTo(lx - 5, ly - 5); ctx.lineTo(lx + 5, ly + 5); ctx.moveTo(lx + 5, ly - 5); ctx.lineTo(lx - 5, ly + 5); ctx.stroke();
       }
@@ -1872,17 +1904,17 @@
         const pv = M.passPreview;
         ctx.save();
         if (pv) {
-          const px = toSX(pv.y), py = toSY(pv.x, cam) + 2;
+          const pq = P(pv.x, pv.y, cam), px = pq.x, py = pq.y + 2 * pq.s;
           ctx.strokeStyle = lob ? "#a8f4ff" : "#3bd1ff"; ctx.lineWidth = 2;
           ctx.setLineDash(lob ? [] : [4, 3]); ctx.lineDashOffset = -renderFrame * 0.5;
-          ctx.beginPath(); ctx.ellipse(px, py, 14, 6, 0, 0, Math.PI * 2); ctx.stroke();
+          ctx.beginPath(); ctx.ellipse(px, py, 14 * pq.s, 6 * pq.s, 0, 0, Math.PI * 2); ctx.stroke();
           if (lob) {
-            ctx.beginPath(); ctx.ellipse(px, py, 19, 8, 0, 0, Math.PI * 2); ctx.stroke();
+            ctx.beginPath(); ctx.ellipse(px, py, 19 * pq.s, 8 * pq.s, 0, 0, Math.PI * 2); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(px - 4, py - 4); ctx.lineTo(px + 4, py + 4); ctx.moveTo(px + 4, py - 4); ctx.lineTo(px - 4, py + 4); ctx.stroke();
           }
         } else {
           const o = M.controlled;
-          const sx = toSX(o.y), sy = toSY(o.x, cam) + 2;
+          const oq = P(o.x, o.y, cam), sx = oq.x, sy = oq.y + 2 * oq.s;
           const dx = o.fy, dy = -o.fx; // 向き（ワールド → 画面）
           const x1 = sx + dx * 14, y1 = sy + dy * 14, x2 = sx + dx * 36, y2 = sy + dy * 36;
           ctx.strokeStyle = lob ? "#a8f4ff" : "#3bd1ff"; ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = 2;
@@ -1896,7 +1928,7 @@
       if (M.shotAim !== null && M.controlled && b.owner === M.controlled && k.phase === "playing") {
         const r = M.charge >= 0 ? Math.min(1, M.charge / 30) : 0;
         // ゴールが拡大で画面の外（上）にあるときは、画面の上の端に出す
-        const ax = toSX(M.shotAim), ay = Math.max(toSY(oppGoalX(0) - 14, cam), VCY - H / (2 * VIEW_ZOOM) + 16);
+        const ay = Math.max(toSY(oppGoalX(0) - 14, cam), VCY - H / (2 * VIEW_ZOOM) + 16), ax = toSX(M.shotAim, ay);
         const sz = 7 + r * 6;
         ctx.save();
         ctx.fillStyle = k.retro.alpha(c.gold, 0.25 + 0.35 * r);
@@ -1911,7 +1943,7 @@
       // 切り替わった瞬間: 新しい選手の足もとに大きめの輪（だんだん小さく・薄く）
       if (M.switchFlash > 0 && M.controlled) {
         const f = M.switchFlash / SWITCH_FLASH;
-        const fx = toSX(M.controlled.y), fy = toSY(M.controlled.x, cam) + 2;
+        const fq = P(M.controlled.x, M.controlled.y, cam), fx = fq.x, fy = fq.y + 2 * fq.s;
         ctx.save();
         ctx.lineWidth = 3; ctx.strokeStyle = k.retro.alpha(c.magenta, f);
         ctx.beginPath(); ctx.ellipse(fx, fy, 12 + 22 * f, 5 + 9 * f, 0, 0, Math.PI * 2); ctx.stroke();
@@ -1923,7 +1955,7 @@
       // 操作中の選手の目印と、シュートの溜め
       const cp = M.controlled;
       if (cp) {
-        const x = toSX(cp.y), y = toSY(cp.x, cam) - 48;
+        const cq = P(cp.x, cp.y, cam), x = cq.x, y = cq.y - 48 * cq.s;
         if (cp.boost > 0.05) {
           // ダッシュ中: 足もとの土ぼこりと、目印の右に速さのゲージ
           const vx = cp.vy, vy = -cp.vx, sp = Math.hypot(vx, vy);
@@ -1980,7 +2012,7 @@
       // 点数（+50 など）: 上へふわっと動いて、最後は薄くなって消える
       for (const q of M.popups) {
         const age = q.life - q.t;
-        const px = toSX(q.y), py = toSY(q.x, cam) - 30 - age * POPUP.rise;
+        const qq = P(q.x, q.y, cam), px = qq.x, py = qq.y - 30 * qq.s - age * POPUP.rise;
         const a = Math.min(1, q.t / 15);
         ctx.save();
         ctx.font = k.retro.font(q.big ? 22 : 11); ctx.textAlign = "center";

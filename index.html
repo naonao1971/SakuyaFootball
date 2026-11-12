@@ -29,6 +29,7 @@
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（スティックを離すと、ボールに近い選手に自動でも切り替わる。走っている間は切り替わらない。切り替わった選手の足もとが光る）</li>
       <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
       <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を押している間、PC は C キーを押している間、操作中の選手が速くなる。走りすぎるとスタミナが切れて、その選手はしばらくダッシュできない（左のパネルのバー）</li>
+      <li>体でキープ: ボールを持っているとき、近くの忍者に背中を向ける（スティックで忍者と反対の方を向く）と、体でボールを守って取られにくくなる。足もとに金の弧と「KEEP」が出る。後ろからのスライディングも空振りしやすい</li>
       <li>キーパー: CNP のキーパーがボールを持つと、操作がキーパーに移る。スティックで向きを変え、B で向いている方の味方の足もとへパス（長押しで浮き玉）、A で前へ大きく蹴る。何もしなければ約4秒で自動で蹴る</li>
       <li>練習モード: ⚙ の「練習モード（キーパーだけ）」を ON にしてスタート。相手はキーパーだけで、時間切れもランキング登録もない。OFF にすると普通の試合に戻る</li>
       <li>PC: 矢印 / WASD で移動 ・ X が A ・ Z が B ・ C を押している間ダッシュ ・ P 一時停止 ・ M 音</li>
@@ -107,6 +108,10 @@
     // ヘディング・ボレー: 浮いているボール（高さ AIR_MIN〜AIR_MAX）に STRIKE_REACH まで近づいて蹴る。HEAD_Z より高ければヘディング。
     // 操作中の選手は、ボールが浮いて近くにあるときに A を押すと、STRIKE_BUFFER フレームのあいだ当たるのを待つ
     const AIR_MIN = 5, AIR_MAX = 40, HEAD_Z = 20, STRIKE_REACH = 20, STRIKE_BUFFER = 20;
+    // 体でキープ: ボールを持った選手の後ろ側（向きと反対。向きとの内積が behind 未満）にいる相手は、体にさえぎられて
+    // ボールに届きにくい。ぶつかって奪う確率を stealMul 倍にし、後ろからのスライディングは slideMiss の確率で空振りさせる。
+    // 操作中の選手の near 以内に、さえぎっている相手がいるときは、足もとに盾の弧と「KEEP」を出す
+    const SHIELD = { behind: -0.3, stealMul: 0.2, slideMiss: 0.6, near: 34 };
     const RETREAT_MARGIN = 20;                 // キーパーが持ったとき、相手はハーフラインからこれだけ自陣側へ下がる
     const KEEPER_HOLD_MIN = 40, KEEPER_HOLD_MAX = 170; // キーパーがボールを持つ長さ（フレーム）
     // CNP のキーパーがボールを持ったら、操作がキーパーに移る（スティックで向き、B でパス・長押しで浮き玉、A で大きく蹴る）。
@@ -1074,7 +1079,7 @@
           }
         }
       }
-      // スライディングとボディコンタクトでボールを奪う
+      // スライディングとボディコンタクトでボールを奪う（ボールを持った選手が背中を向けていれば、体でキープして取られにくい）
       const o = b.owner;
       if (o && !o.isGK) {
         for (const p of M.players) {
@@ -1087,6 +1092,14 @@
             }
             continue;
           }
+          const shielded = isShielded(o, p);
+          if (p.slide > 0 && d < 17 && shielded && rnd() < SHIELD.slideMiss) {
+            // 後ろからのスライディングは、体でキープしていると空振りする（滑った選手は転ぶ）
+            p.slide = 0; p.stun = 24; p.vx *= 0.3; p.vy *= 0.3;
+            if (o.team === 0) refJudge("keep");
+            SFX.keep();
+            continue;
+          }
           if (p.slide > 0 && d < 17) {
             o.stun = 45;
             kick(p, p.vx + (rnd() - 0.5), p.vy + (rnd() - 0.5), 3.2, 1.5);
@@ -1097,7 +1110,8 @@
             refJudge("playon");
             return;
           }
-          if (p.slide === 0 && p.kickCd === 0 && d < 14 && o.hold > 8 && rnd() < (p.team === 0 ? 0.1 : ENEMY.steal)) {
+          const stealP = (p.team === 0 ? 0.1 : ENEMY.steal) * (shielded ? SHIELD.stealMul : 1);
+          if (p.slide === 0 && p.kickCd === 0 && d < 14 && o.hold > 8 && rnd() < stealP) {
             o.stun = 18;
             giveBall(p);
             if (p.team === 0) addPoints(POINTS.steal, p.x, p.y);
@@ -1107,6 +1121,12 @@
         }
         o.hold++;
       }
+    }
+
+    // ボールを持った選手 o の後ろ側（向きと反対）に p がいて、体でボールをさえぎっているか
+    function isShielded(o, p) {
+      const dx = p.x - o.x, dy = p.y - o.y, d = Math.hypot(dx, dy) || 1;
+      return (dx * o.fx + dy * o.fy) / d < SHIELD.behind;
     }
 
     function checkBounds() {
@@ -1235,7 +1255,8 @@
           if (M.ref.poseT === 0 && rnd() < 0.6) { setPose("playon", 40); say("プレーオン！", 45); mood("surprised", 45); }
           break;
         case "fulltime": setPose("fulltime", 150); say("試合終了！", 140); mood("happy", 150); break;
-        case "longshot": mood("surprised", 50); break;            // ロングシュートにびっくり
+        case "longshot": mood("surprised", 50); break;
+        case "keep": if (M.ref.poseT === 0) { setPose("playon", 30); say("ナイスキープ！", 45); mood("happy", 45); } break;            // ロングシュートにびっくり
         case "save": if (M.ref.moodT === 0) mood("surprised", 40); break; // 速いシュートをキーパーが止めた
       }
     }
@@ -1280,6 +1301,7 @@
         if (header) kit.sfx.tone({ freq: 520, to: 300, dur: 0.07, gain: 0.09, type: "triangle" });
         else { kit.sfx.noise({ dur: 0.1, gain: 0.2, filterFrom: 3000, filterTo: 400 }); kit.sfx.tone({ freq: 300, to: 120, dur: 0.08, gain: 0.08 }); }
       },
+      keep() { kit.sfx.tone({ freq: 660, to: 990, dur: 0.08, gain: 0.07, type: "triangle" }); },
       longShot() {
         kit.sfx.noise({ dur: 0.22, gain: 0.26, filterFrom: 3200, filterTo: 300 });
         kit.sfx.tone({ freq: 180, to: 900, dur: 0.3, gain: 0.08, type: "sawtooth" });
@@ -1953,6 +1975,23 @@
         ctx.lineWidth = 1.5; ctx.strokeStyle = `rgba(255,255,255,${f})`;
         ctx.beginPath(); ctx.ellipse(fx, fy, 8 + 14 * f, 3 + 6 * f, 0, 0, Math.PI * 2); ctx.stroke();
         ctx.restore();
+      }
+
+      // 体でキープ: 操作中の選手がボールを持ち、近くの相手を体でさえぎっているとき、相手の側に金の盾の弧と「KEEP」
+      if (M.controlled && b.owner === M.controlled && !M.controlled.isGK) {
+        const o = M.controlled;
+        let foe = null, fd = SHIELD.near;
+        for (const q of M.players) if (q.team !== o.team && !q.isGK && dist(q, o) < fd) { fd = dist(q, o); foe = q; }
+        if (foe && isShielded(o, foe)) {
+          const oq = P(o.x, o.y, cam);
+          const ang = Math.atan2(-(foe.x - o.x), foe.y - o.y); // 相手の向き（ワールド → 画面）
+          ctx.save();
+          ctx.strokeStyle = k.retro.alpha(c.gold, 0.9); ctx.lineWidth = 3 * oq.s;
+          ctx.beginPath(); ctx.ellipse(oq.x, oq.y - 10 * oq.s, 16 * oq.s, 14 * oq.s, 0, ang - 0.9, ang + 0.9); ctx.stroke();
+          ctx.font = k.retro.font(8); ctx.textAlign = "center"; ctx.fillStyle = c.gold;
+          if (k.retro.blinkOn(10)) ctx.fillText("KEEP", oq.x, oq.y + 14 * oq.s);
+          ctx.restore();
+        }
       }
 
       // 操作中の選手の目印と、シュートの溜め

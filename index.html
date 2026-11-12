@@ -63,7 +63,7 @@
     const LINE = "rgba(255,255,255,0.82)";
     const SHIRT = [{ field: "#2f8fff", gk: "#e8c56a" }, { field: "#e0333d", gk: "#3bd16f" }];
     // 試合の難しさ（忍者チームの強さ）
-    const ENEMY = { speed: 1.95, dribble: 1.8, steal: 0.035, slide: 0.012, longShot: 0.004 };
+    const ENEMY = { speed: 1.95, dribble: 1.8, steal: 0.025, slide: 0.012, longShot: 0.004 };
     // 4人のフィールドプレーヤーの基本の位置（自陣ゴールからの割合）。DF・左右の MF・FW のひし形
     const FORMATION = [{ x: 0.2, y: 0.5 }, { x: 0.42, y: 0.24 }, { x: 0.42, y: 0.76 }, { x: 0.62, y: 0.5 }];
 
@@ -86,7 +86,15 @@
     const AIR_MIN = 5, AIR_MAX = 40, HEAD_Z = 20, STRIKE_REACH = 20, STRIKE_BUFFER = 20;
     const RETREAT_MARGIN = 20;                 // キーパーが持ったとき、相手はハーフラインからこれだけ自陣側へ下がる
     const KEEPER_HOLD_MIN = 40, KEEPER_HOLD_MAX = 170; // キーパーがボールを持つ長さ（フレーム）
-    const KEEPER_DIVE_SPEED = 1.7;             // シュートに反応して横へ動く速さ
+    // 操作中の選手のシュートの速さ: base + 溜め（0〜1）× charge
+    const SHOT = { base: 7.5, charge: 6 };
+    // キーパーのキャッチの確率（ボールの速さ別: midSpeed 未満は catchSlow、fastSpeed 未満は catchMid、それ以上は catchFast）と、
+    // シュートに反応して横へ動く速さ（dive）。チームごと（[CNP, 忍者]）。
+    // CNP のキーパーは強いまま、忍者チームのキーパーだけゆるめて、CNP の点が入りやすいようにする
+    const KEEPER = [
+      { catchSlow: 0.97, catchMid: 0.78, catchFast: 0.5, midSpeed: 6, fastSpeed: 9.5, dive: 1.7 },
+      { catchSlow: 0.97, catchMid: 0.65, catchFast: 0.35, midSpeed: 6, fastSpeed: 9.5, dive: 1.45 },
+    ];
     const keeperHolding = (team) => { const o = M.ball.owner; return !!o && o.isGK && o.team === team; };
     const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
     const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -233,7 +241,7 @@
       } else {
         tx = p.x + p.fx * 200; ty = p.y + p.fy * 200;
       }
-      kick(p, tx - p.x, ty - p.y, 7.5 + t * 5, 1 + t * 3.1);
+      kick(p, tx - p.x, ty - p.y, SHOT.base + t * SHOT.charge, 1 + t * 3.1);
       SFX.shoot(t);
     }
 
@@ -736,7 +744,7 @@
       const inBox = Math.abs(b.x - ownGoalX(p.team)) < 150 && Math.abs(b.y - MIDY) < 130;
       if (!b.owner && inBox && dist(p, b) < 90 && b.z < BAR_Z) return seek(p, b.x, b.y, 2.4);
       // シュートに反応して横へ動くときは少し遅い（すみへの速いシュートは届かないことがある）
-      seek(p, homeX, ty, towardGoal ? KEEPER_DIVE_SPEED : 2.4);
+      seek(p, homeX, ty, towardGoal ? KEEPER[p.team].dive : 2.4);
     }
 
     function movePlayer(p) {
@@ -829,7 +837,8 @@
           if (g.stun > 0 || b.z > BAR_Z + 6 || dist(g, b) > 22) continue;
           if (b.lastTeam === t && b.vx * attackDir(t) > 0) continue; // 味方のバックパスは手を使わず普通に拾う
           const sp = Math.hypot(b.vx, b.vy);
-          let chance = sp < 6 ? 0.97 : sp < 9.5 ? 0.78 : 0.5;
+          const K = KEEPER[t];
+          let chance = sp < K.midSpeed ? K.catchSlow : sp < K.fastSpeed ? K.catchMid : K.catchFast;
           // 上から落ちてくるボールは取りにくい（高いほど）
           const dropping = b.z > 12 && b.vz < 0;
           if (dropping) chance *= b.z > 24 ? 0.45 : 0.75;

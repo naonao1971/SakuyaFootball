@@ -56,29 +56,31 @@
     const MIDX = FW / 2, MIDY = FH / 2;
     const GOAL_HALF = 58, GY0 = MIDY - GOAL_HALF, GY1 = MIDY + GOAL_HALF;
     const GOAL_DEPTH = 28, BAR_Z = 34;         // ゴールの奥行きとクロスバーの高さ
-    const FIELD_LEFT = (W - FH) / 2;           // フィールドを映す枠（左右の余白のあいだ）の左端
+    // 画面の割り振り: 左から FIELD_W がフィールド、右の PANEL_W がスコア・時間・レーダー・審判の窓。
+    // フィールドの上の ROSTER_H は、両チームの顔の帯（半透明でフィールドに重ねる）
+    const PANEL_W = 230, FIELD_LEFT = 0, FIELD_W = W - PANEL_W, ROSTER_H = 46;
     // 斜め上からの見下ろし: 画面の奥（上）ほど横に狭く・小さく、手前（下）ほど広く・大きく描く。
     // 画面に見えている上の端で (1 - VIEW_TILT) 倍、下の端で (1 + VIEW_TILT) 倍。0 にすると真上から
     const VIEW_TILT = 0.18;
     // 寄り（ズーム）: フィールドの枠の中を VIEW_ZOOM 倍にして映す。カメラはボールを上下に追う（横に余るときは左右にも）。
     // いちばん手前（画面の下）の段でも、左右のタッチラインと外側 VIEW_FIT_MARGIN のトラックが入るように、傾きから決める
     const VIEW_FIT_MARGIN = 10;
-    const VIEW_ZOOM = FH / ((LY1 - LY0 + VIEW_FIT_MARGIN * 2) * (1 + VIEW_TILT));
-    const VCX = FIELD_LEFT + FH / 2, VCY = H / 2; // 拡大の中心（フィールドの枠のまん中）
+    const VIEW_ZOOM = FIELD_W / ((LY1 - LY0 + VIEW_FIT_MARGIN * 2) * (1 + VIEW_TILT));
+    const VCY = H / 2; // 拡大の中心の高さ（横の中心は VIEW.cx。プレー中はフィールドの枠のまん中、タイトルは画面のまん中）
     // カメラ（画面のまん中に来るワールドの位置）が動ける範囲。縦はゴール裏のスタンドが少し見えるところまで、横はトラックが少し見えるところまで
     const CAM_MIN = H / (2 * VIEW_ZOOM) - 70, CAM_MAX = FW - H / (2 * VIEW_ZOOM) + 70;
     // 横は、フィールドの幅が全部入るときは真ん中に止める
-    const CAMY_MIN = Math.min(MIDY, FH / (2 * VIEW_ZOOM) - 12), CAMY_MAX = Math.max(MIDY, FH - FH / (2 * VIEW_ZOOM) + 12);
+    const CAMY_MIN = Math.min(MIDY, FIELD_W / (2 * VIEW_ZOOM) - 12), CAMY_MAX = Math.max(MIDY, FH - FIELD_W / (2 * VIEW_ZOOM) + 12);
     const CAM_LEAD = 14; // ボールが進む方向の先を多めに映す（ボールの速さ × この数）
     const TITLE_CAM_SWING = MIDX - (H / 2 - 110); // タイトル画面（拡大しない）でカメラが上下する幅
     // 今のフレームの横のカメラ位置と、傾きの基準にする「見えている高さの半分」（拡大前の座標。描画のときだけ使う）
-    const VIEW = { camY: MIDY, hv: H / (2 * VIEW_ZOOM) };
+    const VIEW = { camY: MIDY, hv: H / (2 * VIEW_ZOOM), cx: FIELD_LEFT + FIELD_W / 2 };
     // ワールド → 画面（cam は画面の中央に来るワールドの x）
     const toSY = (x, cam) => H / 2 - (x - cam);
     // 画面の高さ sy のところの大きさの倍率（奥ほど小さい）
     const persp = (sy) => 1 + (VIEW_TILT * (sy - VCY)) / VIEW.hv;
     // ワールドの横位置 y を、画面の高さ sy のところで画面の x にする（奥ほど中央に寄る）
-    const toSX = (y, sy) => VCX + (y - VIEW.camY) * persp(sy);
+    const toSX = (y, sy) => VIEW.cx + (y - VIEW.camY) * persp(sy);
     // ワールド (x, y) → 画面の位置と大きさの倍率
     const P = (wx, wy, cam) => { const sy = toSY(wx, cam); return { x: toSX(wy, sy), y: sy, s: persp(sy) }; };
     const MATCH_FRAMES = 120 * 60;             // 試合時間（2分）
@@ -86,6 +88,10 @@
     // チームの色（芝とユニフォームはこのゲーム固有の絵なので、ここにまとめる）
     const GRASS = ["#1d6331", "#226e38"];
     const LINE = "rgba(255,255,255,0.82)";
+    // 忍者チームの選手: クリプト忍者のドット絵（ナオブロックビルダーの元絵を 40x40 に縮めたもの。assets/ninja/）。咲耶は審判なので入れない
+    const NINJA_CHARS = [["ninja-jin", "刃"], ["ninja-kohaku", "狐白"], ["ninja-shiba", "柴"], ["ninja-kanaoni", "金鬼"], ["ninja-oto", "於兎"], ["ninja-rotten", "呂屯"], ["ninja-nagisa", "凪紗"], ["ninja-anne", "餡音"], ["ninja-dan", "断"], ["ninja-hinano-joh", "雛之丞"], ["ninja-torika", "酉花"], ["ninja-atoza", "アトザ"], ["ninja-hayate", "ハヤテ"], ["ninja-uka", "宇迦"], ["ninja-ganzi", "岩爺"], ["ninja-yui", "結"], ["ninja-futa", "風太"], ["ninja-rei", "令"], ["ninja-sattva", "サットヴァ"], ["ninja-nekomata", "猫又"], ["ninja-janome", "蛇ノ目"], ["ninja-benten", "弁天"], ["ninja-karma", "カルマ"], ["ninja-ichiya", "イチヤ"], ["ninja-nemu", "ネム"], ["ninja-karura", "カルラ"], ["ninja-xiaolan", "シャオラン"], ["ninja-aum", "アウン"], ["ninja-konga", "コンガ"], ["ninja-shion", "紫苑"], ["ninja-seori", "瀬織"], ["ninja-quon", "久遠"], ["ninja-magoichi", "孫市"], ["ninja-ibuki", "イブキ"], ["ninja-oen", "おえん"], ["ninja-izuna", "イズナ"], ["ninja-sekishusai", "石舟斎"], ["ninja-sasagane", "ササガネ"]];
+    const ninjaImgs = {};
+    const ninjaImg = (id) => ninjaImgs[id] || (ninjaImgs[id] = Object.assign(new Image(), { src: `assets/ninja/${id}.png` }));
     const SHIRT = [{ field: "#2f8fff", gk: "#e8c56a" }, { field: "#e0333d", gk: "#3bd16f" }];
     // 試合の難しさ（忍者チームの強さ）
     const ENEMY = { speed: 1.95, dribble: 1.8, steal: 0.025, slide: 0.012, longShot: 0.004 };
@@ -202,6 +208,10 @@
         if (t === 1 && practice) continue;
         for (let i = 0; i < 4; i++) players.push(makePlayer(t, i, false, t === 0 ? pool[i + 1] : null));
       }
+      // 忍者チームは、クリプト忍者から試合ごとにランダムに5人
+      const npool = NINJA_CHARS.slice();
+      for (let i = npool.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [npool[i], npool[j]] = [npool[j], npool[i]]; }
+      players.filter((p) => p.team === 1).forEach((p, i) => { p.nin = npool[i][0]; p.ninLabel = npool[i][1]; ninjaImg(p.nin); });
       M = {
         players,
         ball: { x: MIDX, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, lastTeam: 0, passTarget: null, gkIgnore: 0 },
@@ -1258,7 +1268,7 @@
         if (!kit.retro.reduceMotion) M.shake = GOAL_FX.shake; // 画面効果を減らす設定のときは揺らさない
         // 紙吹雪（画面の上から、フィールドの幅に）
         M.confetti = Array.from({ length: GOAL_FX.confetti }, () => ({
-          x: FIELD_LEFT + rnd() * FH, y: -10 - rnd() * 80, vx: (rnd() - 0.5) * 0.8, vy: 2.2 + rnd() * 1.6,
+          x: FIELD_LEFT + rnd() * FIELD_W, y: -10 - rnd() * 80, vx: (rnd() - 0.5) * 0.8, vy: 2.2 + rnd() * 1.6,
           c: CROWD[Math.floor(rnd() * CROWD.length)], s: 3 + Math.floor(rnd() * 2), ph: rnd() * 6,
         }));
       } else {
@@ -1737,9 +1747,8 @@
     const artReady = (im) => im.complete && im.naturalWidth > 0;
 
     // 右の余白の審判窓: 判定に合わせて表情が変わり、判定の言葉を出す
-    function drawRefWindow(ctx, k) {
+    function drawRefWindow(ctx, k, x, y, w, h) {
       const c = k.retro.colors, r = M.ref;
-      const w = 132, h = 132, x = FIELD_LEFT + FH + (W - FIELD_LEFT - FH - w) / 2, y = 236;
       ctx.save();
       ctx.fillStyle = "rgba(4,6,12,0.75)"; ctx.fillRect(x, y, w, h);
       k.retro.frame(x, y, w, h, 0.55);
@@ -1747,14 +1756,14 @@
       ctx.fillText("REFEREE", x + w / 2, y + 13);
       const im = SAKUYA_ART[r.mood] || SAKUYA_ART.normal;
       if (artReady(im)) {
-        const sz = 100, ar = im.naturalWidth / im.naturalHeight;
+        const sz = h - 30, ar = im.naturalWidth / im.naturalHeight;
         const dw = ar >= 1 ? sz : sz * ar, dh = ar >= 1 ? sz / ar : sz;
         const hop = r.mood === "happy" ? Math.abs(Math.sin(k.frame / 6)) * 4 : 0;
         ctx.drawImage(im, x + (w - dw) / 2, y + 18 + (sz - dh) - hop, dw, dh);
-      } else drawChibi(ctx, x + w / 2, y + 110, 3, "idle", k.frame);
+      } else drawChibi(ctx, x + w / 2, y + h - 22, 3, "idle", k.frame);
       if (r.bubble) {
         ctx.font = k.retro.fontBody(12); ctx.fillStyle = "#ffffff";
-        ctx.fillText(r.bubble.text, x + w / 2, y + h + 18);
+        ctx.fillText(r.bubble.text, x + w / 2, y + h + 17);
       }
       ctx.restore();
     }
@@ -1777,9 +1786,9 @@
     function drawRefBubble(ctx, k, cam) {
       const r = M.ref;
       if (!r.bubble) return;
-      const half = FH / (2 * VIEW_ZOOM) - 40; // 拡大前の座標で、画面に見えている横の範囲
+      const half = FIELD_W / (2 * VIEW_ZOOM) - 40; // 拡大前の座標で、画面に見えている横の範囲
       const q = P(r.x, r.y, cam);
-      const x = clamp(q.x, VCX - half, VCX + half), y = q.y - 44 * q.s;
+      const x = clamp(q.x, VIEW.cx - half, VIEW.cx + half), y = q.y - 44 * q.s;
       if (y < 10 || y > H) return;
       ctx.save();
       ctx.font = k.retro.fontBody(12);
@@ -1796,6 +1805,14 @@
 
     function drawHead(ctx, p, k, x, y, size) {
       if (p.team === 0 && p.ch) { k.cnp.draw(ctx, p.ch, x, y, size); return; }
+      if (p.team === 1 && p.nin && artReady(ninjaImg(p.nin))) {
+        // クリプト忍者（ドット絵なので、ぼかさずに描く）
+        const sz = size * 1.1;
+        ctx.save(); ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(ninjaImg(p.nin), Math.round(x - sz / 2), Math.round(y - sz / 2), Math.round(sz), Math.round(sz));
+        ctx.restore();
+        return;
+      }
       // 忍者チーム: 黒い頭巾に、チーム色の鉢巻
       ctx.fillStyle = "#1a1c2c";
       ctx.beginPath(); ctx.arc(x, y + 2, size * 0.36, 0, Math.PI * 2); ctx.fill();
@@ -1817,9 +1834,8 @@
     }
 
     // 右の余白: 縦長のレーダー
-    function drawRadar(ctx, k) {
+    function drawRadar(ctx, k, rx, ry, rw, rh) {
       const c = k.retro.colors;
-      const rw = 72, rh = 180, rx = FIELD_LEFT + FH + (W - FIELD_LEFT - FH - rw) / 2, ry = 40;
       ctx.save();
       ctx.font = k.retro.font(9); ctx.fillStyle = c.gold; ctx.textAlign = "center";
       ctx.fillText("RADAR", rx + rw / 2, ry - 10);
@@ -1839,7 +1855,7 @@
       ctx.fillStyle = "#fff";
       ctx.fillRect(Math.round(mx(M.ball.y)) - 1, Math.round(my(M.ball.x)) - 1, 3, 3);
       // 画面に見えている範囲
-      const hv = H / (2 * VIEW_ZOOM), hw = FH / (2 * VIEW_ZOOM);
+      const hv = H / (2 * VIEW_ZOOM), hw = FIELD_W / (2 * VIEW_ZOOM);
       const top = clamp(my(M.cam + hv), ry + 1, ry + rh - 1), bot = clamp(my(M.cam - hv), ry + 1, ry + rh - 1);
       const lft = clamp(mx(M.camY - hw), rx + 1, rx + rw - 1), rgt = clamp(mx(M.camY + hw), rx + 1, rx + rw - 1);
       ctx.strokeStyle = k.retro.alpha(c.gold, 0.8);
@@ -1847,54 +1863,58 @@
       ctx.restore();
     }
 
-    // 左の余白: 時間・得点・出場中の CNP
-    function drawSidePanel(ctx, k) {
-      const c = k.retro.colors;
-      const cx = FIELD_LEFT / 2;
+    // 右の余白: スコア → 時間 → 得点 → レーダーと審判の窓（下のほうはスマホの A・B ボタンのために空けておく）
+    function drawRightPanel(ctx, k) {
+      const c = k.retro.colors, x0 = FIELD_LEFT + FIELD_W, cx = x0 + PANEL_W / 2;
       ctx.save();
-      k.hud.score();
+      k.hud.score({ x: x0 + 16, y: 26 });
       ctx.textAlign = "center";
       if (M.practice) {
         // 練習モード: 時間切れなし。経った時間を数える
         const sec = Math.floor(M.timer / 60);
-        ctx.font = k.retro.font(9); ctx.fillStyle = "#3bd1ff"; ctx.fillText("PRACTICE", cx, 98);
+        ctx.font = k.retro.font(9); ctx.fillStyle = "#3bd1ff"; ctx.fillText("PRACTICE", cx, 92);
         ctx.font = k.retro.font(20); ctx.fillStyle = c.ink;
-        ctx.fillText(`${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`, cx, 124);
+        ctx.fillText(`${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`, cx, 118);
       } else {
         const left = Math.max(0, Math.ceil((MATCH_FRAMES - M.timer) / 60));
-        ctx.font = k.retro.font(9); ctx.fillStyle = c.gold; ctx.fillText("TIME", cx, 98);
+        ctx.font = k.retro.font(9); ctx.fillStyle = c.gold; ctx.fillText("TIME", cx, 92);
         ctx.font = k.retro.font(20);
         ctx.fillStyle = left <= 10 && k.retro.blinkOn(15) ? c.danger : c.ink;
-        ctx.fillText(`${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`, cx, 124);
+        ctx.fillText(`${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`, cx, 118);
       }
-      for (let t = 0; t < 2; t++) {
-        const y = 164 + t * 30;
-        ctx.textAlign = "left"; ctx.font = k.retro.font(13); ctx.fillStyle = SHIRT[t].field;
-        ctx.fillText(TEAM_NAMES[t], 24, y);
-        ctx.textAlign = "right"; ctx.fillStyle = c.ink; ctx.font = k.retro.font(18);
-        ctx.fillText(String(M.goals[t]), FIELD_LEFT - 24, y + 2);
-      }
-      // 出場中の CNP（操作中の選手をマゼンタで囲む。GK は金の縁）
-      ctx.textAlign = "center"; ctx.font = k.retro.font(8); ctx.fillStyle = c.gold;
-      ctx.fillText("CNP TEAM", cx, 238);
-      const mine = M.players.filter((p) => p.team === 0);
-      mine.forEach((p, i) => {
-        const col = i % 3, row = Math.floor(i / 3);
-        const n = row === 0 ? 3 : 2;
-        const x = cx + (col - (n - 1) / 2) * 62, y = 276 + row * 84;
-        ctx.fillStyle = "rgba(4,6,12,0.7)"; ctx.fillRect(x - 24, y - 24, 48, 48);
-        k.cnp.draw(ctx, p.ch, x, y, 44);
+      // 得点: CNP（左）と NINJA（右）
+      ctx.font = k.retro.font(11);
+      ctx.textAlign = "left"; ctx.fillStyle = SHIRT[0].field; ctx.fillText(TEAM_NAMES[0], x0 + 14, 156);
+      ctx.textAlign = "right"; ctx.fillStyle = SHIRT[1].field; ctx.fillText(TEAM_NAMES[1], x0 + PANEL_W - 14, 156);
+      ctx.textAlign = "center"; ctx.fillStyle = c.ink; ctx.font = k.retro.font(18);
+      ctx.fillText(`${M.goals[0]}-${M.goals[1]}`, cx, 158);
+      ctx.restore();
+      drawRadar(ctx, k, x0 + 14, 190, 62, 150);
+      drawRefWindow(ctx, k, x0 + 88, 176, 128, 128);
+    }
+
+    // フィールドの上の帯: 左に CNP の5人、右に忍者の5人の顔（咲耶スクランブルの上段のロスターと同じ考え方）。
+    // 操作中の選手はマゼンタ、キーパーは金（CNP）・緑（忍者）の縁。CNP のフィールドプレーヤーには、下にスタミナのバー
+    function drawTopRoster(ctx, k) {
+      const c = k.retro.colors, slot = 34, gap = 6, top = 5;
+      ctx.save();
+      ctx.fillStyle = "rgba(4,6,12,0.55)"; ctx.fillRect(FIELD_LEFT, 0, FIELD_W, ROSTER_H);
+      const face = (p, x) => {
+        ctx.fillStyle = "rgba(4,6,12,0.75)"; ctx.fillRect(x, top, slot, slot);
+        const mx = x + slot / 2, my = top + slot / 2;
+        if (p.team === 0) k.cnp.draw(ctx, p.ch, mx, my, slot - 2);
+        else if (artReady(ninjaImg(p.nin))) { ctx.imageSmoothingEnabled = false; ctx.drawImage(ninjaImg(p.nin), x + 1, top + 1, slot - 2, slot - 2); ctx.imageSmoothingEnabled = true; }
         ctx.lineWidth = 2;
-        ctx.strokeStyle = p === M.controlled ? c.magenta : p.isGK ? SHIRT[0].gk : k.retro.alpha(c.gold, 0.35);
-        ctx.strokeRect(x - 23, y - 23, 46, 46);
-        if (p.isGK) { ctx.fillStyle = c.dim; ctx.fillText("GK", x, y + 36); }
-        else {
-          // スタミナ
-          ctx.fillStyle = "rgba(4,6,12,0.8)"; ctx.fillRect(x - 23, y + 28, 46, 6);
-          ctx.fillStyle = staminaColor(p, k); ctx.fillRect(x - 23, y + 28, 46 * p.stamina, 6);
-          if (p.tired) { ctx.fillStyle = c.danger; ctx.fillText("TIRED", x, y + 46); }
+        ctx.strokeStyle = p === M.controlled ? c.magenta : p.isGK ? SHIRT[p.team].gk : k.retro.alpha(SHIRT[p.team].field, 0.7);
+        ctx.strokeRect(x + 1, top + 1, slot - 2, slot - 2);
+        if (p.team === 0 && !p.isGK) {
+          ctx.fillStyle = "rgba(4,6,12,0.85)"; ctx.fillRect(x, top + slot + 1, slot, 4);
+          ctx.fillStyle = staminaColor(p, k); ctx.fillRect(x, top + slot + 1, slot * p.stamina, 4);
         }
-      });
+      };
+      M.players.filter((p) => p.team === 0).forEach((p, i) => face(p, FIELD_LEFT + 8 + i * (slot + gap)));
+      const nin = M.players.filter((p) => p.team === 1);
+      nin.forEach((p, i) => face(p, FIELD_LEFT + FIELD_W - 8 - (nin.length - i) * (slot + gap) + gap));
       ctx.restore();
     }
 
@@ -1911,7 +1931,7 @@
       ctx.fillStyle = c.bg; ctx.fillRect(0, 0, W, H);
 
       if (k.phase === "title" || !M) {
-        VIEW.camY = MIDY; VIEW.hv = H / 2; // タイトルは拡大しない
+        VIEW.camY = MIDY; VIEW.hv = H / 2; VIEW.cx = W / 2; // タイトルは拡大せず、画面のまん中に
         const cam = MIDX + Math.sin(k.frame / 240) * TITLE_CAM_SWING;
         drawField(ctx, cam);
         drawGoal(ctx, cam, 1); drawGoal(ctx, cam, 0);
@@ -1960,7 +1980,7 @@
       }
 
       const cam = Math.round(M.cam);
-      VIEW.camY = Math.round(M.camY); VIEW.hv = H / (2 * VIEW_ZOOM);
+      VIEW.camY = Math.round(M.camY); VIEW.hv = H / (2 * VIEW_ZOOM); VIEW.cx = FIELD_LEFT + FIELD_W / 2;
       // ゴールの直後は画面（フィールド）を数フレーム揺らす。だんだん小さく。左右の余白の文字は揺らさない
       let shx = 0, shy = 0;
       if (M.shake > 0) {
@@ -1970,8 +1990,8 @@
       // フィールドの枠の中だけを、拡大して描く
       const enterView = () => {
         ctx.save();
-        ctx.beginPath(); ctx.rect(FIELD_LEFT, 0, FH, H); ctx.clip();
-        ctx.translate(VCX + shx, VCY + shy); ctx.scale(VIEW_ZOOM, VIEW_ZOOM); ctx.translate(-VCX, -VCY);
+        ctx.beginPath(); ctx.rect(FIELD_LEFT, 0, FIELD_W, H); ctx.clip();
+        ctx.translate(VIEW.cx + shx, VCY + shy); ctx.scale(VIEW_ZOOM, VIEW_ZOOM); ctx.translate(-VIEW.cx, -VCY);
       };
       enterView();
       drawField(ctx, cam);
@@ -2000,7 +2020,7 @@
         }
         if (k.retro.blinkOn(6)) {
           ctx.save(); ctx.font = k.retro.font(14); ctx.textAlign = "center"; ctx.fillStyle = c.gold;
-          ctx.fillText("LONG SHOT!", W / 2, 44); ctx.restore();
+          ctx.fillText("LONG SHOT!", FIELD_LEFT + FIELD_W / 2, ROSTER_H + 26); ctx.restore();
         }
       }
       // 浮き玉の落ちる場所
@@ -2057,7 +2077,8 @@
       if (M.shotAim !== null && M.controlled && b.owner === M.controlled && k.phase === "playing") {
         const r = M.charge >= 0 ? Math.min(1, M.charge / 30) : 0;
         // ゴールが拡大で画面の外（上）にあるときは、画面の上の端に出す
-        const ay = Math.max(toSY(oppGoalX(0) - 14, cam), VCY - H / (2 * VIEW_ZOOM) + 16), ax = toSX(M.shotAim, ay);
+        // 上の顔の帯の下に出す（拡大前の座標に直して比べる）
+        const ay = Math.max(toSY(oppGoalX(0) - 14, cam), VCY + (ROSTER_H + 14 - VCY) / VIEW_ZOOM), ax = toSX(M.shotAim, ay);
         const sz = 7 + r * 6;
         ctx.save();
         ctx.fillStyle = k.retro.alpha(c.gold, 0.25 + 0.35 * r);
@@ -2181,12 +2202,10 @@
 
       // 左右の余白（縦画面の筐体の外側）
       ctx.fillStyle = c.bg;
-      ctx.fillRect(0, 0, FIELD_LEFT, H);
-      ctx.fillRect(FIELD_LEFT + FH, 0, W - FIELD_LEFT - FH, H);
-      k.retro.frame(FIELD_LEFT - 2, -2, FH + 4, H + 4, 0.45);
-      drawSidePanel(ctx, k);
-      drawRadar(ctx, k);
-      drawRefWindow(ctx, k);
+      ctx.fillRect(FIELD_LEFT + FIELD_W, 0, PANEL_W, H);
+      k.retro.frame(FIELD_LEFT - 2, -2, FIELD_W + 4, H + 4, 0.45);
+      drawTopRoster(ctx, k);
+      drawRightPanel(ctx, k);
 
       if (M.freeze > 0 && k.phase === "playing") {
         if (M.freezeKind === "goal") {
@@ -2197,9 +2216,9 @@
         } else {
           ctx.save();
           ctx.font = k.retro.font(14); ctx.textAlign = "center";
-          k.retro.panel(W / 2 - 100, 22, 200, 30);
+          k.retro.panel(FIELD_LEFT + FIELD_W / 2 - 100, ROSTER_H + 6, 200, 30);
           ctx.fillStyle = c.gold;
-          ctx.fillText(M.caption, W / 2, 44);
+          ctx.fillText(M.caption, FIELD_LEFT + FIELD_W / 2, ROSTER_H + 28);
           ctx.restore();
         }
       }

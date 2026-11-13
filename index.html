@@ -1,10 +1,21 @@
 <!doctype html>
 <html lang="ja">
 <head>
-  <!-- sk:head ここから: 仮の <head>。OGP・アイコンができたら sakuya-kit の tools/ogp.html（または make-assets.mjs）が書き出すものと丸ごと入れ替える -->
+  <!-- sk:head ここから: 仮の <head>（アイコンまで入れた）。OGP ができたら sakuya-kit の tools/ogp.html（または make-assets.mjs）が書き出すものと丸ごと入れ替える -->
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#06070C" />
+  <!-- ホーム画面に追加したとき、Safari のバーなしの全画面で起動する -->
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="咲耶フットボール" />
   <title>SAKUYA FOOTBALL ─ KICK OFF 11 CNP</title>
+  <meta name="description" content="CNP チームを操って、クリプト忍者チームと3分間戦う。審判はちび咲耶。80年代アーケード風の見下ろし型サッカーゲーム。" />
+  <!-- アイコンは tools/mkicon.mjs で作る（シリーズと同じ: 黒地・金の枠・マゼンタのサッカーボール） -->
+  <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png?v=1" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png?v=1" />
+  <link rel="manifest" href="manifest.json?v=1" />
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/naonao1971/sakuya-kit@0.8.0/kit.css" />
   <!-- sk:head ここまで -->
   <style>

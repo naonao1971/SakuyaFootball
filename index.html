@@ -92,6 +92,8 @@
     const GOAL_HALF = 58, GY0 = MIDY - GOAL_HALF, GY1 = MIDY + GOAL_HALF;
     const GOAL_DEPTH = 28, BAR_Z = 34;         // ゴールの奥行きとクロスバーの高さ
     // ゴールネット: 入ったボールは奥・横・天井で止まる（absorb = はね返る勢いの割合）。当たったところがふくらんで揺れる
+    // ゴールポストとクロスバー: 太さ（ボールの中心がこの距離まで来たら当たり）と、跳ね返る勢いの割合
+    const FRAME = { r: 5, bounce: 0.6, deflect: 0.45, glance: 0.55, glanceKeep: 0.75 }; // glance: 中心からこれ以上ずれたら「かすめる」
     const NET = { absorb: 0.18, gap: 5, bulge: 9, minAmp: 3, life: 42, freq: 0.5, radius: 22 };
     // 画面の割り振り: 左から FIELD_W がフィールド、右の PANEL_W がスコア・時間・レーダー・審判の窓。
     // フィールドの上の ROSTER_H は、両チームの顔の帯（半透明でフィールドに重ねる）
@@ -1324,7 +1326,9 @@
         b.z = 0; b.vx = o.vx; b.vy = o.vy; b.vz = 0;
         return;
       }
+      const px = b.x, py = b.y, pz = b.z;
       b.x += b.vx * GAME_SPEED; b.y += b.vy * GAME_SPEED; b.z += b.vz * GAME_SPEED;
+      if (M.freezeKind !== "goal") frameHit(b, px, py, pz);
       if (b.z > 0) {
         b.vz -= GRAVITY * GAME_SPEED;
         // 風: 浮いているボールだけ、高いほど流される
@@ -1341,6 +1345,41 @@
       b.vx *= f; b.vy *= f;
       // ゴールの中ではネットで止まる（奥・横・天井のどこからも抜けない）
       if (M.freezeKind === "goal") netCatch(b);
+    }
+
+    // ゴールポストとクロスバー: ゴールラインを外へ越えた瞬間に、越えた場所がポストかバーの太さの中なら跳ね返す
+    function frameHit(b, px, py, pz) {
+      for (const dir of [1, -1]) {
+        const gx = dir > 0 ? LX1 : LX0;
+        if ((px - gx) * dir > 0 || (b.x - gx) * dir <= 0) continue; // このゴールのラインを外へ越えていない
+        const t = (gx - px) / (b.x - px || 1e-6);
+        const y = py + (b.y - py) * t, z = pz + (b.z - pz) * t, r = FRAME.r;
+        let kind = null, off = 0, at = 0; // off: 当たったところの中心からのずれ（-1〜1）。at: ポストの y かバーの高さ
+        for (const postY of [GY0, GY1]) {
+          if (Math.abs(y - postY) < r && z < BAR_Z + r * 0.5) { kind = "post"; off = (y - postY) / r; at = postY; }
+        }
+        if (!kind && y > GY0 && y < GY1 && Math.abs(z - BAR_Z) < r) { kind = "bar"; off = (z - BAR_Z) / r; at = BAR_Z; }
+        if (!kind) continue;
+        const speed = Math.abs(b.vx), side = Math.sign(off) || 1;
+        if (Math.abs(off) > FRAME.glance) {
+          // かすめた: 少し勢いを落として、そらされた向きへそのまま抜ける
+          // （ポストの内側・バーの下なら中へ入ってゴール、外側・上なら外へ出る。判定は checkBounds）
+          if (kind === "post") { b.y = at + side * r; b.vy += side * speed * FRAME.deflect * 0.5; }
+          else { b.z = Math.max(0, at + side * r); b.vz = side * speed * FRAME.deflect * 0.6; }
+          b.vx *= FRAME.glanceKeep;
+        } else {
+          // まともに当たった: 手前へ跳ね返る
+          b.x = gx - dir * (r * 0.6); b.y = y; b.z = Math.max(0, z);
+          b.vx = -b.vx * FRAME.bounce * (1 - Math.abs(off) * 0.4);
+          if (kind === "post") b.vy += off * speed * FRAME.deflect;
+          else b.vz = off * speed * FRAME.deflect;
+        }
+        b.passTarget = null; b.land = null; b.through = null;
+        SFX.post();
+        if (!kit.retro.reduceMotion) M.shake = Math.max(M.shake, 5);
+        say(kind === "post" ? "ポスト！" : "バー！", 50); mood("surprised", 40);
+        return;
+      }
     }
 
     // ゴールに入ったボールを、ネットの内側に閉じ込める。当たったら勢いを吸って、ネットを揺らす
@@ -2125,6 +2164,7 @@
       pass(lob) { kit.sfx.tone(lob ? { freq: 260, to: 520, dur: 0.12, gain: 0.08, type: "triangle" } : { freq: 330, to: 180, dur: 0.05, gain: 0.08 }); },
       throw() { kit.sfx.tone({ freq: 240, to: 420, dur: 0.14, gain: 0.07, type: "triangle" }); },
       bounce() { kit.sfx.tone({ freq: 160, to: 110, dur: 0.04, gain: 0.05, type: "triangle" }); },
+      post() { kit.sfx.tone({ freq: 1320, to: 990, dur: 0.18, gain: 0.07, type: "square" }); kit.sfx.tone({ freq: 1980, dur: 0.1, gain: 0.04, type: "triangle" }); }, // カーン
       net() { kit.sfx.tone({ freq: 240, to: 70, dur: 0.14, gain: 0.05, type: "sawtooth" }); }, // ネットがバサッ
       slide() { kit.sfx.noise({ dur: 0.18, gain: 0.08, filterFrom: 900, filterTo: 200 }); },
       tackle() { kit.sfx.hit(); },

@@ -158,6 +158,25 @@
     // 操作中の選手の near 以内に、さえぎっている相手がいるときは、足もとに盾の弧と「KEEP」を出す
     const SHIELD = { behind: -0.3, stealMul: 0.2, slideMiss: 0.6, near: 34 };
     const RETREAT_MARGIN = 20;                 // キーパーが持ったとき、相手はハーフラインからこれだけ自陣側へ下がる
+    // 風: 試合ごとに向きと強さ（0〜max m/s）を決める。浮いているボールだけが流される（高いほど強く、高さ fullZ 以上で最大）。
+    // 1 m/s あたり、1フレームに accel だけ横の速さが変わる（5 m/s で、高い浮き玉が 10〜20px ほど流れる＝若干の影響）。
+    // 四すみのコーナーフラッグが風の向きになびき、右のパネルに向きと強さを出す
+    const WIND = { max: 5, accel: 0.005, fullZ: 24 };
+    // セットプレー（コーナーキック・スローイン）: 蹴る・投げる選手はその場から動けない（スティックで向きだけ変える）。
+    // ready フレームまではボタンを受け付けない。人が何もしなければ autoHuman フレームで自動で蹴る・投げる。AI は aiWait フレーム待ってから。
+    // 相手は ボールから keepAway 以上離れる
+    const SET_PIECE = { ready: 10, autoHuman: 360, aiWait: 40, keepAway: 45 };
+    // スローイン: B を短く押すと向いている方の味方へ。長押しするとロングスロー（押した長さで min〜max、chargeMax フレームで最大）。
+    // 投げる前は頭の上（高さ z）にボールを持つ
+    const THROW = { min: 90, max: 260, chargeMax: 50, z: 16 };
+    // キーパーが取りきれなかったシュートを、横へはじき出す割合（残りは前へはじく）
+    const KEEPER_PARRY_WIDE = 0.45;
+    // 守る選手が、速さ speed より速いシュート・クリア（パスではないボール）に触れたとき、体でブロックして弾く確率
+    const BLOCK = { speed: 7.5, chance: 0.5 };
+    // キーパーがクロスに飛び出す範囲（落ちる場所がゴールラインから depth 以内・ゴールの真ん中から横に width 以内）と速さ
+    const KEEPER_CLAIM = { depth: 70, width: 90, speed: 2.8 };
+    // ヘディングの競り合い: 攻める選手が浮き球を頭・足で合わせるとき、ボールから reach 以内に守る選手がいれば、lose の確率で守る側が跳ね返す
+    const HEADER_CONTEST = { reach: 24, lose: 0.55 };
     const KEEPER_HOLD_MIN = 40, KEEPER_HOLD_MAX = 170; // キーパーがボールを持つ長さ（フレーム）
     // CNP のキーパーがボールを持ったら、操作がキーパーに移る（スティックで向き、B でパス・長押しで浮き玉、A で大きく蹴る）。
     // KEEPER_CONTROL_MIN フレームまではボタンを受け付けない（キャッチした瞬間の押しっぱなしで蹴らないように）。
@@ -240,7 +259,11 @@
       const npool = NINJA_CHARS.slice();
       for (let i = npool.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [npool[i], npool[j]] = [npool[j], npool[i]]; }
       players.filter((p) => p.team === 1).forEach((p, i) => { p.nin = npool[i][0]; p.ninLabel = npool[i][1]; ninjaImg(p.nin); });
+      // 風（試合ごと）: 強さは 0.1 m/s きざみ、向きはばらばら
+      const windSpeed = Math.round(rnd() * WIND.max * 10) / 10, windAng = rnd() * Math.PI * 2;
       M = {
+        wind: { x: Math.cos(windAng) * windSpeed, y: Math.sin(windAng) * windSpeed, speed: windSpeed },
+        setPiece: null, throwPreview: null,
         players,
         ball: { x: MIDX, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, lastTeam: 0, passTarget: null, gkIgnore: 0 },
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
@@ -266,6 +289,7 @@
 
     function kickoff(team) {
       M.confetti = [];
+      M.setPiece = null; M.throwPreview = null;
       const b = M.ball;
       Object.assign(b, { x: MIDX, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, passTarget: null, gkIgnore: 0 });
       for (const p of M.players) {
@@ -561,6 +585,11 @@
           stepBall(); // ゴールネットに吸い込まれる余韻
           stepGoalParty();
         }
+        if (M.freezeKind === "restart") {
+          const f = M.ball.owner || M.ball;
+          M.cam += (clamp(f.x, CAM_MIN, CAM_MAX) - M.cam) * 0.12;
+          M.camY += (clamp(f.y, CAMY_MIN, CAMY_MAX) - M.camY) * 0.12;
+        }
         // キックオフは、止まっている最後に審判が笛を吹いて始まる
         if (M.freezeKind === "kickoff" && M.freeze === 22) { setPose("whistle", 24); SFX.whistle(false); }
         if (--M.freeze === 0) {
@@ -581,10 +610,13 @@
       stepHuman(cmd);
       updateRoles();
       for (const p of M.players) if (p !== M.controlled) stepAI(p);
+      if (M.setPiece) keepAwayFromSetPiece();
       for (const p of M.players) movePlayer(p);
       separate();
       stepBall();
       contacts();
+      // 蹴った・投げたら、セットプレーはおしまい
+      if (M.setPiece && M.ball.owner !== M.setPiece.taker) { M.setPiece = null; M.throwPreview = null; }
       checkBounds();
       const b = M.ball;
       const focus = b.owner || b;
@@ -600,6 +632,7 @@
       const b = M.ball;
       if (!c) return;
       M.stickIdle = Math.hypot(cmd.ax, cmd.ay) <= 0.08 ? M.stickIdle + 1 : 0;
+      if (M.setPiece && M.setPiece.taker === c) return setPieceHuman(c, cmd);
       if (c.isGK) {
         if (b.owner === c) return keeperControl(c, cmd);
         // キーパーがボールを離したら、ボールに近いフィールドの選手に操作を戻す
@@ -862,6 +895,9 @@
       const b = M.ball;
       if (p.stun > 0 || p.slide > 0) return;
       if (p.isGK) return stepKeeper(p);
+      if (M.setPiece && M.setPiece.taker === p) return setPieceAI(p);
+      // コーナーキックを蹴るまで、攻める側はゴール前の場所で待つ
+      if (M.setPiece && M.setPiece.kind === "corner" && p.team === M.setPiece.taker.team) { p.tvx = p.tvy = 0; return; }
       if (b.owner === p) return stepOwnerAI(p);
       const sp = p.team === 1 ? ENEMY.speed : 2.1;
       if (keeperHolding(1 - p.team)) return retreat(p);
@@ -947,6 +983,16 @@
       const go = attacking ? near && rnd() < 0.65 : rnd() < 0.7;
       if (!go) return false;
       const dir = attackDir(p.team);
+      if (attacking) {
+        // 競り合い: 近くに守る選手がいたら、HEADER_CONTEST.lose の確率で守る側が先に跳ね返す
+        const foe = M.players.find((q) => q.team !== p.team && !q.isGK && q.stun === 0 && q.slide === 0 && dist(q, b) < HEADER_CONTEST.reach);
+        if (foe && rnd() < HEADER_CONTEST.lose) {
+          foe.fx = attackDir(foe.team); foe.fy = (rnd() - 0.5) * 0.8;
+          airStrike(foe, rnd() * 2 - 1);
+          foe.airCd = 30;
+          return true;
+        }
+      }
       if (!attacking) { p.fx = dir; p.fy = (rnd() - 0.5) * 0.8; }
       else { p.fx = dir; p.fy = 0; }
       airStrike(p, rnd() * 2 - 1);
@@ -1063,6 +1109,11 @@
       } else {
         ty = clamp(MIDY + (b.y - MIDY) * 0.5, GY0 + 6, GY1 - 6);
       }
+      // 相手のクロス（浮き玉）がゴールエリアのあたりに落ちてくるときは、落ちる場所へ飛び出してキャッチしに行く
+      if (!b.owner && b.land && b.z > 0 && b.lastTeam !== p.team &&
+          Math.abs(b.land.x - ownGoalX(p.team)) < KEEPER_CLAIM.depth && Math.abs(b.land.y - MIDY) < KEEPER_CLAIM.width) {
+        return seek(p, b.land.x, b.land.y, KEEPER_CLAIM.speed);
+      }
       // ペナルティエリアのこぼれ球には飛び出す
       const inBox = Math.abs(b.x - ownGoalX(p.team)) < 150 && Math.abs(b.y - MIDY) < 130;
       if (!b.owner && inBox && dist(p, b) < 90 && b.z < BAR_Z) return seek(p, b.x, b.y, 2.4);
@@ -1124,6 +1175,12 @@
       if (!b.owner && b.passTarget && b.z === 0 && Math.hypot(b.vx, b.vy) < 0.8) { b.passTarget = null; b.land = null; b.through = null; }
       if (b.owner) {
         const o = b.owner;
+        if (M.setPiece && M.setPiece.taker === o) {
+          // コーナーキックはボールをコーナーに置いたまま、スローインは頭の上に持つ
+          if (M.setPiece.kind === "throw") { b.x = o.x; b.y = o.y; b.z = THROW.z; }
+          b.vx = b.vy = b.vz = 0;
+          return;
+        }
         if (o.isGK) {
           // キーパーはゴールの前に立ち、ボールはいつも前（攻める向き）に持つ
           const lim = ownGoalX(o.team) + attackDir(o.team) * 12;
@@ -1135,7 +1192,12 @@
         return;
       }
       b.x += b.vx * GAME_SPEED; b.y += b.vy * GAME_SPEED; b.z += b.vz * GAME_SPEED;
-      if (b.z > 0) b.vz -= GRAVITY * GAME_SPEED;
+      if (b.z > 0) {
+        b.vz -= GRAVITY * GAME_SPEED;
+        // 風: 浮いているボールだけ、高いほど流される
+        const wk = Math.min(1, b.z / WIND.fullZ) * WIND.accel * GAME_SPEED;
+        b.vx += M.wind.x * wk; b.vy += M.wind.y * wk;
+      }
       if (b.z <= 0) {
         b.z = 0;
         // 浮き玉のスルーパスは、落ちたところで勢いが死ぬ（× のあたりに止まり、走り込んだ味方が拾える）
@@ -1171,6 +1233,11 @@
           else if (dropping && b.z > 24) {
             // 指先をかすめて、そのままゴールへ
             b.gkIgnore = 30; b.vx *= 0.9; b.vy *= 0.9;
+          } else if (rnd() < KEEPER_PARRY_WIDE) {
+            // 横へはじき出す（ゴールラインを割ればコーナーキック）
+            const side = Math.sign(b.y - MIDY) || (rnd() < 0.5 ? -1 : 1);
+            b.vx *= 0.45; b.vy = side * (3 + rnd() * 2.5); b.vz = 2.6; b.gkIgnore = 30;
+            b.lastTeam = t; SFX.bounce();
           } else {
             b.vx *= -0.35; b.vy += (rnd() - 0.5) * 5; b.vz = 2.2; b.gkIgnore = 24;
             b.lastTeam = t; SFX.bounce();
@@ -1193,7 +1260,14 @@
           const d = dist(p, b);
           if (d < reach && d < bd) { bd = d; best = p; }
         }
-        if (best) {
+        if (best && !tgt && best.slide === 0 && best.team !== b.lastTeam && !best.isGK && speed > BLOCK.speed && rnd() < BLOCK.chance) {
+          // 速いシュートやクリアを体でブロック（止めきれずに弾く。ゴールラインを割ればコーナーキック）
+          const back = -Math.sign(b.vx) || 1;
+          b.vx = b.vx * -0.25 + back * rnd(); b.vy = b.vy * 0.3 + (rnd() - 0.5) * 6; b.vz = 1.5 + rnd() * 1.5;
+          b.lastTeam = best.team; b.gkIgnore = 0;
+          best.kickCd = 12;
+          SFX.bounce();
+        } else if (best) {
           if (best.slide > 0) {
             // スライディングで当たったボールは、滑った向きに転がる
             kick(best, best.vx, best.vy, Math.hypot(best.vx, best.vy) * 1.1, 1);
@@ -1207,7 +1281,7 @@
       }
       // スライディングとボディコンタクトでボールを奪う（ボールを持った選手が背中を向けていれば、体でキープして取られにくい）
       const o = b.owner;
-      if (o && !o.isGK) {
+      if (o && !o.isGK && !(M.setPiece && M.setPiece.taker === o)) { // セットプレーで蹴る・投げる前の選手からは奪えない
         for (const p of M.players) {
           if (p.team === o.team || p.stun > 0) continue;
           const d = dist(p, o);
@@ -1261,7 +1335,9 @@
         const right = b.x > LX1;
         const inMouth = b.y > GY0 && b.y < GY1 && b.z < BAR_Z;
         if (inMouth) return scoreGoal(right ? 0 : 1);
-        return goalKick(right ? 1 : 0);
+        // 守る側が最後に触って出たらコーナーキック、攻める側ならゴールキック
+        const def = right ? 1 : 0;
+        return b.lastTeam === def ? cornerKick(1 - def) : goalKick(def);
       }
       if (b.y < LY0 - 2 || b.y > LY1 + 2) return throwIn(1 - b.lastTeam);
     }
@@ -1331,6 +1407,7 @@
       const g = gkOf(team);
       g.x = ownGoalX(team) + attackDir(team) * 18; g.y = MIDY; g.vx = g.vy = 0;
       M.ball.x = g.x; M.ball.y = g.y; M.ball.vx = M.ball.vy = M.ball.vz = 0; M.ball.z = 0;
+      M.setPiece = null; M.throwPreview = null;
       giveBall(g, false); // ゴールキック（笛が鳴るので切り替えの音は鳴らさない）
       freeze(40, "restart", "GOAL KICK");
       refJudge("goalkick", team);
@@ -1346,7 +1423,10 @@
       p.x = x; p.y = y + (y === LY0 ? 4 : -4); p.vx = p.vy = 0;
       p.fx = 0; p.fy = y === LY0 ? 1 : -1;
       b.x = x; b.y = y; b.vx = b.vy = b.vz = 0; b.z = 0;
+      b.z = THROW.z; // 頭の上に持つ
+      M.setPiece = { kind: "throw", taker: p, t: 0 }; M.throwPreview = null;
       giveBall(p, false);
+      b.z = THROW.z;
       // 相手は少し離れる
       for (const q of M.players) {
         if (q.team === team) continue;
@@ -1356,6 +1436,144 @@
       freeze(40, "restart", "THROW IN");
       refJudge("throwin", team);
       SFX.whistle(false);
+    }
+
+    // コーナーキック: 攻める側（team）が、ボールが出た側のコーナーから蹴る。
+    // 味方はゴール前へ、相手はそのそばでマーク。練習モードで忍者チームの番になったら（フィールドの選手がいない）ゴールキックにする
+    function cornerKick(team) {
+      if (!fieldOf(team).length) return goalKick(1 - team);
+      const b = M.ball, gx = oppGoalX(team), dir = attackDir(team);
+      const cy = b.y < MIDY ? LY0 : LY1, side = cy === LY0 ? 1 : -1; // side: コーナーからフィールドの内側への向き
+      const bx = gx - dir * 3, by = cy + side * 3;
+      Object.assign(b, { x: bx, y: by, z: 0, vx: 0, vy: 0, vz: 0, passTarget: null, land: null, through: null, gkIgnore: 0 });
+      const taker = nearestField(team, { x: bx, y: by });
+      // 蹴る選手はコーナーの外側に立ち、ゴール前を向く
+      taker.x = bx + dir * 6; taker.y = by - side * 6; taker.vx = taker.vy = 0;
+      { const dx = gx - dir * 80 - taker.x, dy = MIDY - taker.y, d = Math.hypot(dx, dy); taker.fx = dx / d; taker.fy = dy / d; }
+      // ゴール前の場所: ニア・ファー・ペナルティスポット・エリアの外（こぼれ球）
+      const spots = [{ x: gx - dir * 40, y: MIDY - side * 30 }, { x: gx - dir * 55, y: MIDY + side * 35 },
+        { x: gx - dir * 90, y: MIDY }, { x: gx - dir * 160, y: MIDY + side * 20 }];
+      const att = fieldOf(team).filter((p) => p !== taker);
+      att.forEach((p, i) => { const s = spots[i]; p.x = s.x + (rnd() - 0.5) * 12; p.y = s.y + (rnd() - 0.5) * 16; p.vx = p.vy = 0; });
+      // 守る側は、ゴール前の攻める選手のゴール側に立つ（足りない分はニアポスト）
+      const def = fieldOf(1 - team);
+      def.forEach((p, i) => {
+        const a = att[i];
+        if (a) { p.x = a.x + dir * 10; p.y = a.y + (rnd() - 0.5) * 10; }
+        else { p.x = gx - dir * 14; p.y = MIDY - side * GOAL_HALF * 0.7; }
+        p.vx = p.vy = 0; p.stun = p.slide = 0;
+      });
+      const g = gkOf(1 - team); g.x = gx - dir * 10; g.y = MIDY - side * 10; g.vx = g.vy = 0;
+      M.setPiece = { kind: "corner", taker, t: 0 }; M.throwPreview = null;
+      giveBall(taker, false);
+      if (team !== 0) setControlled(nearestField(0, b), false);
+      freeze(50, "restart", "CORNER KICK");
+      refJudge("corner", team);
+      SFX.whistle(false);
+    }
+
+    // セットプレーで相手が近すぎたら、ボールから離れる（AI も、人が操作中の選手も）
+    function keepAwayFromSetPiece() {
+      const sp = M.setPiece, b = M.ball;
+      for (const q of M.players) {
+        if (q.team === sp.taker.team || q.isGK || q.stun > 0 || q.slide > 0) continue;
+        const dx = q.x - b.x, dy = q.y - b.y, d = Math.hypot(dx, dy) || 1;
+        if (d < SET_PIECE.keepAway) { q.tvx = (dx / d) * 2; q.tvy = (dy / d) * 2; }
+      }
+    }
+
+    // 投げる: (tx, ty) に落ちるように。頭の上（THROW.z）から投げるので、落ちるまでの時間が浮き玉と同じになるよう上向きを弱める
+    function throwBall(p, tx, ty, mate) {
+      const b = M.ball;
+      tx = clamp(tx, LX0 + 8, LX1 - 8); ty = clamp(ty, LY0 + 8, LY1 - 8);
+      const z0 = b.z;
+      b.z = 0;
+      lobTo(p, tx, ty);
+      const T = (2 * b.vz) / (GRAVITY * GAME_SPEED); // 浮き玉の空中にいるフレーム数
+      b.vz -= z0 / (GAME_SPEED * T);
+      b.z = z0;
+      b.passTarget = mate || null;
+      if (mate && mate.team === 0) setControlled(mate, false);
+      SFX.throw();
+    }
+
+    // ロングスローの落ちる場所（向いている方へ、押した長さに応じた距離）
+    function longThrowSpot(p, charge) {
+      const r = clamp((charge - LOB_HOLD) / THROW.chargeMax, 0, 1);
+      const d = THROW.min + (THROW.max - THROW.min) * r;
+      return { x: clamp(p.x + p.fx * d, LX0 + 8, LX1 - 8), y: clamp(p.y + p.fy * d, LY0 + 8, LY1 - 8) };
+    }
+
+    // CNP のセットプレー。スティックで向き、B を短く押すと向いている方の味方へ（コーナーは足もとへのパス、スローインは軽く投げる）、
+    // B 長押しはコーナーなら味方へ浮き玉、スローインならロングスロー（押した長さで距離）。A はコーナーならゴール前へのクロス、スローインなら一番遠くへのロングスロー
+    function setPieceHuman(c, cmd) {
+      const sp = M.setPiece, b = M.ball;
+      c.tvx = c.tvy = 0; c.vx = c.vy = 0;
+      M.shotAim = null; M.aimY = null; M.charge = -1; M.throughPreview = null;
+      sp.t++;
+      const n = Math.hypot(cmd.ax, cmd.ay);
+      if (n > 0.08) {
+        c.fx = cmd.ax / n; c.fy = cmd.ay / n;
+        // スローインはフィールドの外へは投げない（タッチラインの外を向いたら、ラインと平行に）
+        if (sp.kind === "throw" && (c.y < MIDY ? c.fy < 0 : c.fy > 0)) { c.fy = 0; c.fx = Math.sign(cmd.ax) || attackDir(c.team); }
+      }
+      const ready = sp.t > SET_PIECE.ready;
+      const throwIn = sp.kind === "throw";
+      if (cmd.bPressed && ready) M.passCharge = 0;
+      if (M.passCharge >= 0 && cmd.bHeld) M.passCharge = Math.min(LOB_HOLD + (throwIn ? THROW.chargeMax : 20), M.passCharge + 1);
+      M.throwPreview = throwIn && M.passCharge >= LOB_HOLD ? longThrowSpot(c, M.passCharge) : null;
+      M.passPreview = M.throwPreview ? null : facingMate(c, M.passPreview);
+      const auto = sp.t > SET_PIECE.autoHuman;
+      if (cmd.bReleased && M.passCharge >= 0) {
+        const lob = M.passCharge >= LOB_HOLD;
+        if (throwIn) {
+          if (lob) { const s = longThrowSpot(c, M.passCharge); throwBall(c, s.x, s.y, null); }
+          else if (M.passPreview) throwBall(c, M.passPreview.x, M.passPreview.y, M.passPreview);
+          else { const s = { x: c.x + c.fx * 70, y: c.y + c.fy * 70 }; throwBall(c, s.x, s.y, null); }
+        } else humanPass(c, lob);
+        M.passCharge = -1;
+      } else if ((cmd.aPressed && ready) || auto) {
+        M.passCharge = -1;
+        if (throwIn) { const s = longThrowSpot(c, LOB_HOLD + THROW.chargeMax); throwBall(c, s.x, s.y, null); }
+        else cornerCross(c);
+      }
+      if (b.owner !== c) { M.passPreview = null; M.throwPreview = null; }
+    }
+
+    // コーナーからゴール前へのクロス: ゴール前（エリアの中）の味方のうち、ペナルティスポットに近い選手へ。いなければスポットのあたりへ
+    function cornerCross(p) {
+      const gx = oppGoalX(p.team), dir = attackDir(p.team);
+      let best = null, bd = 1e9;
+      for (const m of fieldOf(p.team)) {
+        if (m === p || Math.abs(m.x - gx) > 130 || Math.abs(m.y - MIDY) > 110) continue;
+        const d = Math.hypot(m.x - (gx - dir * 70), m.y - MIDY) + rnd() * 40;
+        if (d < bd) { bd = d; best = m; }
+      }
+      const tx = best ? best.x : gx - dir * 80, ty = best ? best.y : MIDY;
+      { const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy) || 1; p.fx = dx / d; p.fy = dy / d; }
+      lobTo(p, tx + (rnd() - 0.5) * 16, ty + (rnd() - 0.5) * 16);
+      M.ball.passTarget = best;
+      if (best && best.team === 0) setControlled(best, false);
+      SFX.pass(true);
+    }
+
+    // AI のセットプレー: 少し待ってから。コーナーはゴール前へクロス、
+    // スローインは相手ゴールに近ければ半分くらいロングスローでゴール前へ、それ以外は近くの空いた味方へ
+    function setPieceAI(p) {
+      const sp = M.setPiece;
+      p.tvx = p.tvy = 0; p.vx = p.vy = 0;
+      if (++sp.t < SET_PIECE.aiWait) return;
+      if (sp.kind === "corner") return cornerCross(p);
+      const gx = oppGoalX(p.team), dir = attackDir(p.team);
+      if (Math.abs(gx - p.x) < 330 && rnd() < 0.5) {
+        const tx = gx - dir * (60 + rnd() * 50), ty = MIDY + (rnd() - 0.5) * 80;
+        const mate = nearestField(p.team, { x: tx, y: ty }, p);
+        { const dx = tx - p.x, dy = ty - p.y, d = Math.hypot(dx, dy) || 1; p.fx = dx / d; p.fy = dy / d; }
+        return throwBall(p, tx, ty, mate && dist(mate, { x: tx, y: ty }) < 60 ? mate : null);
+      }
+      const opt = bestPassOption(p);
+      if (opt && dist(p, opt.m) < THROW.max) return throwBall(p, opt.m.x, opt.m.y, opt.m);
+      throwBall(p, p.x + dir * 70, p.y + (p.y < MIDY ? 25 : -25), null);
     }
 
     // ================================================================
@@ -1377,6 +1595,7 @@
         case "throwin": // ボールをもらう側の攻める向きを指す
           setPose("point", 45, { x: M.ball.x + attackDir(team) * 200, y: M.ball.y }); say("スローイン！", 50); break;
         case "goalkick": setPose("point", 45, { x: ownGoalX(team), y: MIDY }); say("ゴールキック！", 50); break;
+        case "corner": setPose("point", 50, { x: M.ball.x, y: M.ball.y }); say("コーナーキック！", 55); break;
         case "playon": // スライディングでボールを奪った: 反則ではない、続けて
           if (M.ref.poseT === 0 && rnd() < 0.6) { setPose("playon", 40); say("プレーオン！", 45); mood("surprised", 45); }
           break;
@@ -1434,6 +1653,7 @@
       },
       shoot(t) { kit.sfx.noise({ dur: 0.08 + t * 0.08, gain: 0.16 + t * 0.1, filterFrom: 2600, filterTo: 300 }); kit.sfx.tone({ freq: 220 + t * 200, to: 90, dur: 0.08, gain: 0.08 }); },
       pass(lob) { kit.sfx.tone(lob ? { freq: 260, to: 520, dur: 0.12, gain: 0.08, type: "triangle" } : { freq: 330, to: 180, dur: 0.05, gain: 0.08 }); },
+      throw() { kit.sfx.tone({ freq: 240, to: 420, dur: 0.14, gain: 0.07, type: "triangle" }); },
       bounce() { kit.sfx.tone({ freq: 160, to: 110, dur: 0.04, gain: 0.05, type: "triangle" }); },
       slide() { kit.sfx.noise({ dur: 0.18, gain: 0.08, filterFrom: 900, filterTo: 200 }); },
       tackle() { kit.sfx.hit(); },
@@ -1554,7 +1774,54 @@
         const a0 = d > 0 ? (e > 0 ? 0 : -Math.PI / 2) : e > 0 ? Math.PI / 2 : Math.PI;
         arc(gx, cy, 10, a0, a0 + Math.PI / 2);
       }
+      for (const gx of [LX0, LX1]) for (const cy of [LY0, LY1]) drawCornerFlag(ctx, cam, gx, cy);
       drawStands(ctx, cam);
+    }
+
+    // 風の向き（画面の上での向き。ワールドの (x, y) は画面では (y, -x)）と強さ。タイトル画面ではそよ風
+    const windNow = () => (M ? M.wind : { x: -1.2, y: 1.6, speed: 2 });
+    // コーナーフラッグ: 風の向きになびく。強いほど旗がまっすぐのび、速くはためく。風がないと垂れる
+    function drawCornerFlag(ctx, cam, gx, cy) {
+      const q = P(gx, cy, cam), s = q.s;
+      const w = windNow(), k = w.speed / WIND.max;
+      const top = q.y - 34 * s;
+      ctx.strokeStyle = "#f4f4f4"; ctx.lineWidth = 1.5 * s;
+      ctx.beginPath(); ctx.moveTo(q.x, q.y); ctx.lineTo(q.x, top); ctx.stroke();
+      const sx = w.speed > 0 ? w.y / w.speed : 1, sy = w.speed > 0 ? -w.x / w.speed : 0;
+      // 横にのびる向き（強いほど風の向きどおり、弱いと下へ垂れる）
+      let ux = sx * (0.35 + 0.65 * k), uy = sy * 0.35 * k + (1 - k) * 0.9;
+      const un = Math.hypot(ux, uy) || 1; ux /= un; uy /= un;
+      const len = (13 + 7 * k) * s, hgt = 10 * s;
+      const wave = Math.sin(renderFrame * (0.12 + 0.3 * k) + gx * 0.01 + cy * 0.03) * (1 + 2.5 * k) * s;
+      ctx.fillStyle = "#ffd23f";
+      ctx.beginPath();
+      ctx.moveTo(q.x, top);
+      ctx.quadraticCurveTo(q.x + ux * len * 0.5 - uy * wave, top + uy * len * 0.5 + ux * wave * 0.3, q.x + ux * len, top + uy * len + hgt * 0.4);
+      ctx.lineTo(q.x, top + hgt);
+      ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = "#c0392b"; ctx.lineWidth = 1 * s; ctx.stroke();
+    }
+
+    // 右のパネル: 風の向き（矢印）と強さ（m/s）
+    function drawWind(ctx, k, x, y, w) {
+      const c = k.retro.colors, wd = M.wind;
+      ctx.save();
+      ctx.fillStyle = "rgba(4,6,12,0.55)"; ctx.fillRect(x, y, w, 34);
+      ctx.strokeStyle = k.retro.alpha(c.gold, 0.5); ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, 33);
+      ctx.font = k.retro.font(9); ctx.fillStyle = c.gold; ctx.textAlign = "left";
+      ctx.fillText("WIND", x + 8, y + 21);
+      const ax = x + 72, ay = y + 17;
+      if (wd.speed < 0.3) {
+        ctx.fillStyle = c.dim; ctx.font = k.retro.font(8); ctx.fillText("CALM", ax - 12, y + 21);
+      } else {
+        const dx = wd.y / wd.speed, dy = -wd.x / wd.speed, r = 11;
+        ctx.strokeStyle = "#a8f4ff"; ctx.fillStyle = "#a8f4ff"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(ax - dx * r, ay - dy * r); ctx.lineTo(ax + dx * (r - 4), ay + dy * (r - 4)); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(ax + dx * r, ay + dy * r); ctx.lineTo(ax + dx * (r - 6) - dy * 5, ay + dy * (r - 6) + dx * 5); ctx.lineTo(ax + dx * (r - 6) + dy * 5, ay + dy * (r - 6) - dx * 5); ctx.fill();
+      }
+      ctx.font = k.retro.font(11); ctx.fillStyle = c.ink; ctx.textAlign = "right";
+      ctx.fillText(`${wd.speed.toFixed(1)}m`, x + w - 8, y + 22);
+      ctx.restore();
     }
 
     // ゴール裏のスタンド（観客のドット）と看板。ゴールが決まると観客が跳ねる。奥（上）のスタンドほど小さく描く
@@ -1919,6 +2186,7 @@
       ctx.restore();
       drawRadar(ctx, k, x0 + 14, 190, 62, 150);
       drawRefWindow(ctx, k, x0 + 88, 176, 128, 128);
+      drawWind(ctx, k, x0 + 88, 330, 128);
     }
 
     // フィールドの上の帯: 左に CNP の5人、右に忍者の5人の顔（咲耶スクランブルの上段のロスターと同じ考え方）。
@@ -2058,6 +2326,17 @@
         ctx.beginPath(); ctx.moveTo(lx - 5, ly - 5); ctx.lineTo(lx + 5, ly + 5); ctx.moveTo(lx + 5, ly - 5); ctx.lineTo(lx - 5, ly + 5); ctx.stroke();
       }
 
+      // ロングスローの落ちる場所（B を長押ししている間）
+      if (M.throwPreview && k.phase === "playing") {
+        const tq = P(M.throwPreview.x, M.throwPreview.y, cam), r = 6 * tq.s;
+        ctx.save();
+        ctx.strokeStyle = "#a8f4ff"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(tq.x - r, tq.y - r); ctx.lineTo(tq.x + r, tq.y + r); ctx.moveTo(tq.x + r, tq.y - r); ctx.lineTo(tq.x - r, tq.y + r); ctx.stroke();
+        ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(tq.x, tq.y, 12 * tq.s, 5 * tq.s, 0, 0, Math.PI * 2); ctx.stroke();
+        if (k.retro.blinkOn(12)) { ctx.font = k.retro.font(8); ctx.textAlign = "center"; ctx.fillStyle = "#a8f4ff"; ctx.fillText("LONG THROW", tq.x, tq.y - 10 * tq.s); }
+        ctx.restore();
+      }
+
       // パス先の予告: 印のある味方の足もとに水色の点線の輪（浮き玉になる長さまで B を押すと、明るい二重の輪と ×）。
       // パス先がいなければ、蹴り出す向きに短い矢印
       if (M.controlled && b.owner === M.controlled && k.phase === "playing" && M.throughPreview) {
@@ -2195,12 +2474,18 @@
         }
         if (M.passCharge >= 0) {
           // B の長押し: 溜まると LOB（浮き玉）
+          // スローインのときは、LOB のあとロングスローの距離がたまっていく（金色）
+          const throwIn = M.setPiece && M.setPiece.kind === "throw";
           const r = Math.min(1, M.passCharge / LOB_HOLD);
           ctx.fillStyle = "rgba(4,6,12,0.7)"; ctx.fillRect(x - 16, y - 10, 32, 5);
           ctx.fillStyle = "#3bd1ff"; ctx.fillRect(x - 16, y - 10, 32 * r, 5);
+          if (throwIn && r >= 1) {
+            const r2 = Math.min(1, (M.passCharge - LOB_HOLD) / THROW.chargeMax);
+            ctx.fillStyle = c.gold; ctx.fillRect(x - 16, y - 10, 32 * r2, 5);
+          }
           if (r >= 1) {
-            ctx.save(); ctx.font = k.retro.font(8); ctx.textAlign = "center"; ctx.fillStyle = "#3bd1ff";
-            ctx.fillText("LOB", x, y - 14); ctx.restore();
+            ctx.save(); ctx.font = k.retro.font(8); ctx.textAlign = "center"; ctx.fillStyle = throwIn ? c.gold : "#3bd1ff";
+            ctx.fillText(throwIn ? "LONG THROW" : "LOB", x, y - 14); ctx.restore();
           }
         }
       }

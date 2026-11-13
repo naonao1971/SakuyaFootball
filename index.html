@@ -58,6 +58,7 @@
       <li>キーパー: CNP のキーパーがボールを持つと、操作がキーパーに移る。スティックで向きを変え、B で向いている方の味方の足もとへパス（長押しで浮き玉）、A で前へ大きく蹴る。何もしなければ約4秒で自動で蹴る</li>
       <li>セーブ: 忍者チームのシュートがゴールへ飛んでくると、操作が CNP のキーパーに移る。スティックで動き、B でキャッチ、A でパンチング（押すとボールへ飛びつく）。ボタンを押さずに当たると取りにくい。ボールがゴールへ向かわなくなったら、フィールドの選手に戻る</li>
       <li>ファウル: 後ろからのスライディングは必ずファウル、横からは半々。前からならクリーン。ファウルされた側の直接フリーキック（ゴールに近いと相手が2人で壁を作る）。CNP が蹴るときは、近ければ A でシュート（▼でねらう・長押しで強く）、遠ければ A で大きく前へ。B はパス</li>
+      <li>PK: ペナルティエリアの中でファウルされたら PK。ゴールが9マスに分かれた画面が出るので、スティックで蹴る場所（守るときはキーパーが飛ぶ場所）を選んで A。キーパーと同じマスなら止められ、上下にひとつずれなら半々。上の段のすみはたまに枠の外へ</li>
       <li>ショルダーチャージ: ボールを持った相手と横に並んでいるときに A を押すと、肩で当たって奪いにいく（ダッシュ中は成功しやすい）。失敗するとよろける</li>
       <li>練習モード: ⚙ の「練習モード（キーパーだけ）」を ON にしてスタート。相手はキーパーだけで、時間切れもランキング登録もない。OFF にすると普通の試合に戻る</li>
       <li>PC: 矢印 / WASD で移動 ・ X が A ・ Z が B ・ C を押している間ダッシュ ・ P 一時停止 ・ M 音</li>
@@ -168,6 +169,12 @@
     // ショルダーチャージ: ボールを持った相手と横に並んで（reach 以内・向きとの内積の大きさが side 未満）A を押すと、肩で当たって奪う。
     //   成功の確率 win（ダッシュ中は dashWin）。失敗すると自分がよろける（stun フレーム）
     const SHOULDER = { reach: 24, side: 0.6, win: 0.5, dashWin: 0.65, stun: 14 };
+    // PK: 相手のペナルティエリア（ゴールラインから boxDepth・横に boxHalf）の中でファウルされたら PK。
+    //   ボールはゴールラインから spot。ゴールを9マス（横3×縦3）に分け、CNP は蹴る場所（守るときは飛ぶ場所）をスティックで選んで A/B で決める。
+    //   ready フレームまでは決められない。choose フレームたったら、そのとき選んでいるマスで決まる。
+    //   同じマス→止める。同じ列で上下にひとつずれ→ halfSave の確率で止める。それ以外はゴール。上の段のすみは miss の確率で枠の外。
+    //   fly: ボールが飛ぶフレーム数
+    const PK = { boxDepth: 158, boxHalf: 130, spot: 92, ready: 15, choose: 300, halfSave: 0.5, miss: 0.15, fly: 34, rowZ: [27, 15, 4], colY: 0.62 };
     const RETREAT_MARGIN = 20;                 // キーパーが持ったとき、相手はハーフラインからこれだけ自陣側へ下がる
     // 風: 試合ごとに向きと強さ（0〜max m/s）を決める。浮いているボールだけが流される（高いほど強く、高さ fullZ 以上で最大）。
     // 1 m/s あたり、1フレームに accel だけ横の速さが変わる（5 m/s で、高い浮き玉が 10〜20px ほど流れる＝若干の影響）。
@@ -332,6 +339,7 @@
     }
 
     function freeze(frames, kind, caption) {
+      if (kind !== "restart") M.pk = null;
       M.freeze = frames; M.freezeKind = kind; M.caption = caption;
     }
 
@@ -643,6 +651,7 @@
         }
         return;
       }
+      if (M.pk) return stepPK(cmd); // PK の読み合いの間は、時間も止まる
       M.timer++;
       if (M.longShot > 0) M.longShot--;
       if (!M.practice && M.timer >= MATCH_FRAMES) {
@@ -1433,7 +1442,8 @@
               p.slide = 0; p.stun = 30; p.vx *= 0.3; p.vy *= 0.3;
               o.stun = 40;
               SFX.tackle(); M.flash = 6;
-              freeKick(o.team, o.x, o.y, o);
+              if (inPenaltyBox(o.team, o.x, o.y)) penaltyKick(o.team, o);
+              else freeKick(o.team, o.x, o.y, o);
               return;
             }
           }
@@ -1614,6 +1624,127 @@
       freeze(50, "restart", "CORNER KICK");
       refJudge("corner", team);
       SFX.whistle(false);
+    }
+
+    // team が攻める側のペナルティエリアの中か
+    function inPenaltyBox(team, x, y) {
+      return Math.abs(oppGoalX(team) - x) < PK.boxDepth && Math.abs(y - MIDY) < PK.boxHalf;
+    }
+
+    // PK: team が蹴る。fouled（ファウルされた選手）が蹴る
+    function penaltyKick(team, fouled) {
+      const b = M.ball, gx = oppGoalX(team), dir = attackDir(team);
+      const kicker = fouled && !fouled.isGK ? fouled : nearestField(team, b);
+      const keeper = gkOf(1 - team);
+      const sx = gx - dir * PK.spot;
+      Object.assign(b, { x: sx, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, passTarget: null, land: null, through: null, gkIgnore: 0 });
+      for (const p of M.players) { p.vx = p.vy = p.tvx = p.tvy = 0; p.slide = 0; p.stun = 0; p.act = null; }
+      kicker.x = sx - dir * 14; kicker.y = MIDY + 6; kicker.fx = dir; kicker.fy = 0;
+      keeper.x = gx - dir * 4; keeper.y = MIDY; keeper.fx = -dir; keeper.fy = 0;
+      // ほかの選手はエリアの外へ（横に並ぶ）
+      let i = 0;
+      for (const p of M.players) {
+        if (p === kicker || p.isGK) continue;
+        if (inPenaltyBox(team, p.x, p.y) || Math.abs(p.x - sx) < 60) {
+          p.x = gx - dir * (PK.boxDepth + 14 + (i % 2) * 16); p.y = MIDY + (i - 3) * 22; i++;
+        }
+      }
+      M.setPiece = null; M.throwPreview = null; M.passPreview = null; M.shotAim = null; M.aimY = null; M.aimLock = null;
+      M.charge = -1; M.passCharge = -1; M.strikeBuf = 0; M.gkSave = null;
+      M.pk = { team, kicker, keeper, phase: "choose", t: 0, cur: { c: 1, r: 1 }, stickN: true, kick: null, dive: null, from: null, to: null, result: null };
+      setControlled(team === 0 ? kicker : keeper, false);
+      M.lastKicker = kicker;
+      freeze(60, "restart", "PENALTY KICK");
+      refJudge("pk", team);
+      SFX.whistle(true);
+    }
+
+    // マス（c: 0〜2 左から, r: 0〜2 上から）→ ゴールの中の場所。画面の左がワールドの y の小さい側
+    const pkCellY = (cc) => MIDY + (cc - 1) * GOAL_HALF * PK.colY;
+    function aiPkCell(kicking) {
+      if (kicking) { // 蹴る AI はすみが多め
+        const c = rnd() < 0.8 ? (rnd() < 0.5 ? 0 : 2) : 1;
+        return { c, r: Math.floor(rnd() * 3) };
+      }
+      return { c: Math.floor(rnd() * 3), r: Math.floor(rnd() * 3) }; // 飛ぶ AI はばらばら
+    }
+
+    function stepPK(cmd) {
+      const pk = M.pk, b = M.ball, gx = oppGoalX(pk.team), dir = attackDir(pk.team);
+      pk.t++;
+      M.cam += (clamp(gx - dir * 70, CAM_MIN, CAM_MAX) - M.cam) * 0.15;
+      M.camY += (MIDY - M.camY) * 0.15;
+      if (pk.phase === "choose") {
+        // スティック: 倒した瞬間に1マス動く（戻すまで次は動かない）。画面の上下は cmd.ax、左右は cmd.ay
+        const n = Math.hypot(cmd.ax, cmd.ay);
+        if (n < 0.3) pk.stickN = true;
+        else if (pk.stickN) {
+          pk.stickN = false;
+          if (Math.abs(cmd.ay) > Math.abs(cmd.ax)) pk.cur.c = clamp(pk.cur.c + Math.sign(cmd.ay), 0, 2);
+          else pk.cur.r = clamp(pk.cur.r - Math.sign(cmd.ax), 0, 2);
+          SFX.switch();
+        }
+        const ok = pk.t > PK.ready && (cmd.aPressed || cmd.bPressed);
+        if (ok || pk.t > PK.choose) {
+          const mine = { ...pk.cur };
+          if (pk.team === 0) { pk.kick = mine; pk.dive = aiPkCell(false); }
+          else { pk.dive = mine; pk.kick = aiPkCell(true); }
+          pk.phase = "fly"; pk.t = 0;
+          // 上の段のすみは、ときどき枠の外
+          pk.out = pk.kick.r === 0 && pk.kick.c !== 1 && rnd() < PK.miss;
+          pk.from = { x: b.x, y: b.y };
+          const ty = pkCellY(pk.kick.c) + (pk.out ? (pk.kick.c - 1) * GOAL_HALF * 0.75 : 0);
+          pk.to = { x: gx + dir * 6, y: ty, z: pk.out ? BAR_Z + 6 : PK.rowZ[pk.kick.r] };
+          pk.keeperFrom = { x: pk.keeper.x, y: pk.keeper.y };
+          pk.kicker.act = { kind: "volley", t: 16 };
+          pk.keeper.act = { kind: pk.dive.r === 2 ? "punch" : "catch", t: GK_SAVE.t };
+          SFX.shoot(0.8);
+        }
+        return;
+      }
+      if (pk.phase === "fly") {
+        const f = Math.min(1, pk.t / PK.fly);
+        // キーパーは少し遅れて、選んだマスへ飛ぶ
+        const kf = clamp((pk.t - 4) / (PK.fly - 8), 0, 1);
+        pk.keeper.y = pk.keeperFrom.y + (pkCellY(pk.dive.c) - pk.keeperFrom.y) * kf;
+        pk.keeper.vy = pk.dive.c === 1 ? 0 : (pk.dive.c - 1) * 2; // 倒れる向き
+        if (pk.keeper.act) pk.keeper.act.t = Math.max(1, Math.round(GK_SAVE.t * (1 - kf * 0.5)));
+        if (pk.kicker.act && pk.kicker.act.t > 1) pk.kicker.act.t--;
+        b.x = pk.from.x + (pk.to.x - pk.from.x) * f;
+        b.y = pk.from.y + (pk.to.y - pk.from.y) * f;
+        b.z = pk.to.z * Math.sin(f * Math.PI * 0.5);
+        // ゴールラインの手前で判定
+        if (f >= 0.85 && !pk.result) {
+          if (pk.out) pk.result = "miss";
+          else if (pk.kick.c === pk.dive.c && pk.kick.r === pk.dive.r) pk.result = "save";
+          else if (pk.kick.c === pk.dive.c && Math.abs(pk.kick.r - pk.dive.r) === 1 && rnd() < PK.halfSave) pk.result = "save";
+          else pk.result = "goal";
+          if (pk.result === "save") return endPK();
+        }
+        if (f >= 1) return endPK();
+      }
+    }
+
+    function endPK() {
+      const pk = M.pk, b = M.ball;
+      M.pk = null;
+      pk.kicker.act = null; pk.keeper.act = null; pk.keeper.vy = 0;
+      M.lastKicker = pk.kicker;
+      b.lastTeam = pk.team;
+      if (pk.result === "goal") {
+        b.vx = attackDir(pk.team) * 3; b.vy = 0; b.vz = 0;
+        return scoreGoal(pk.team);
+      }
+      if (pk.result === "save") {
+        giveBall(pk.keeper, false); SFX.catch();
+        if (pk.keeper.team === 0) addPoints(POINTS.onTarget, pk.keeper.x, pk.keeper.y);
+        freeze(50, "restart", "SAVE!");
+        refJudge("pksave");
+        return;
+      }
+      // 枠の外: ゴールキック
+      goalKick(1 - pk.team);
+      M.caption = "MISS!";
     }
 
     // 直接フリーキック: ファウルされた側（team）が、ファウルの場所から蹴る。fouled: ファウルされた選手（その選手が蹴る）
@@ -1840,6 +1971,8 @@
         case "save": if (M.ref.moodT === 0) mood("surprised", 40); break; // 速いシュートをキーパーが止めた
         case "foul": // ファウル: フリーキックをもらう側の攻める向きを指す
           setPose("point", 60, { x: M.ball.x + attackDir(team) * 200, y: M.ball.y }); say("ファウル！", 60); mood("surprised", 50); break;
+        case "pk": setPose("point", 70, { x: oppGoalX(team) - attackDir(team) * PK.spot, y: MIDY }); say("PK！", 70); mood("surprised", 60); break;
+        case "pksave": mood("surprised", 50); say("止めた！", 50); break;
         case "charge": if (M.ref.poseT === 0 && rnd() < 0.5) { setPose("playon", 30); say("ナイスチャージ！", 45); } break;
       }
     }
@@ -1964,7 +2097,7 @@
     });
     window.kit = kit; // デバッグ用・playtest が読む（消さない）
     window.match = () => M; // デバッグ用
-    window.__sim = { newMatch: () => newMatch(), step: (cmd) => stepMatch(cmd) }; // 自動テスト用（試合を早送りする）
+    window.__sim = { newMatch: () => newMatch(), step: (cmd) => stepMatch(cmd), pk: (team) => penaltyKick(team, null) }; // 自動テスト用（試合を早送りする）
 
     // ================================================================
     // 描画（フィールドは縦長。芝と線は回して描き、選手とボールは位置だけ回して立てたまま描く）
@@ -2790,6 +2923,55 @@
           ctx.restore();
         }
       }
+      if (M.pk && M.freeze === 0 && k.phase === "playing") drawPK(ctx, k);
+    }
+
+    // PK の9マス。CNP が蹴るときは「どこへ蹴る？」、守るときは「どこへ飛ぶ？」。
+    // 決めたあと（ボールが飛んでいる間）は、蹴った場所（金の●）とキーパーが飛んだ場所（水色の枠）を見せる
+    function drawPK(ctx, k) {
+      const c = k.retro.colors, pk = M.pk;
+      const pw = 236, ph = 150, px = FIELD_LEFT + (FIELD_W - pw) / 2;
+      const py = pk.team === 0 ? H - ph - 18 : ROSTER_H + 44; // ゴールにかぶらない側
+      ctx.save();
+      k.retro.panel(px, py, pw, ph);
+      ctx.textAlign = "center";
+      ctx.font = k.retro.font(10); ctx.fillStyle = c.gold;
+      ctx.fillText("PENALTY KICK", px + pw / 2, py + 18);
+      ctx.font = k.retro.fontBody(12); ctx.fillStyle = "#ffffff";
+      const choosing = pk.phase === "choose";
+      ctx.fillText(choosing ? (pk.team === 0 ? "どこへ蹴る？" : "どこへ飛ぶ？") + "  スティックで選んで A" : "", px + pw / 2, py + 36);
+      // ゴール（正面から見た形）を3×3に
+      const gw = 180, gh = 78, gx0 = px + (pw - gw) / 2, gy0 = py + 46;
+      const cw = gw / 3, chh = gh / 3;
+      ctx.fillStyle = "rgba(255,255,255,0.06)"; ctx.fillRect(gx0, gy0, gw, gh);
+      ctx.strokeStyle = "rgba(255,255,255,0.25)"; ctx.lineWidth = 1;
+      for (let i = 1; i < 3; i++) {
+        ctx.beginPath(); ctx.moveTo(gx0 + cw * i, gy0); ctx.lineTo(gx0 + cw * i, gy0 + gh); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(gx0, gy0 + chh * i); ctx.lineTo(gx0 + gw, gy0 + chh * i); ctx.stroke();
+      }
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(gx0, gy0 + gh); ctx.lineTo(gx0, gy0); ctx.lineTo(gx0 + gw, gy0); ctx.lineTo(gx0 + gw, gy0 + gh); ctx.stroke();
+      const cell = (q) => ({ x: gx0 + q.c * cw, y: gy0 + q.r * chh });
+      if (choosing) {
+        const q = cell(pk.cur);
+        ctx.fillStyle = k.retro.alpha(pk.team === 0 ? c.gold : "#3bd1ff", k.retro.blinkOn(10) ? 0.55 : 0.3);
+        ctx.fillRect(q.x + 2, q.y + 2, cw - 4, chh - 4);
+        ctx.strokeStyle = c.magenta; ctx.lineWidth = 2; ctx.strokeRect(q.x + 2, q.y + 2, cw - 4, chh - 4);
+        // 残り時間
+        const left = 1 - Math.min(1, pk.t / PK.choose);
+        ctx.fillStyle = "rgba(4,6,12,0.7)"; ctx.fillRect(gx0, gy0 + gh + 8, gw, 5);
+        ctx.fillStyle = left < 0.3 ? c.danger : c.gold; ctx.fillRect(gx0, gy0 + gh + 8, gw * left, 5);
+      } else {
+        // 読み合いの答え合わせ
+        const d = cell(pk.dive);
+        ctx.strokeStyle = "#3bd1ff"; ctx.lineWidth = 3; ctx.strokeRect(d.x + 3, d.y + 3, cw - 6, chh - 6);
+        ctx.font = k.retro.font(7); ctx.fillStyle = "#3bd1ff"; ctx.fillText("GK", d.x + cw / 2, d.y + chh - 5);
+        const kq = cell(pk.kick);
+        const ox = pk.out ? (pk.kick.c - 1) * cw * 0.6 : 0, oy = pk.out ? -chh * 0.7 : 0;
+        ctx.fillStyle = c.gold; ctx.beginPath(); ctx.arc(kq.x + cw / 2 + ox, kq.y + chh / 2 + oy, 7, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      ctx.restore();
     }
 
     // スマホ: 画面の右側（A・B・⚙ などのボタンの上は除く）を押している間ダッシュ。押した指の pointerId を覚え、

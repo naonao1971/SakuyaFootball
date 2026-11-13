@@ -22,7 +22,7 @@
   <details class="sk-how" id="how">
     <summary>遊び方</summary>
     <ul>
-      <li>CNP チーム（青）を操って、忍者チーム（赤）と2分間の試合。勝てばクリア</li>
+      <li>CNP チーム（青）を操って、忍者チーム（赤）と3分間の試合。勝てばクリア</li>
       <li>ボールを持っているとき: A でシュート（押し続けると強いシュート。ゴールの近くでボールを持つと、ゴールの上で金の▼が左右に動く。A を押した瞬間の▼の位置へ飛ぶ）、B でパス（向いている方の味方の足元へ。パス先の味方の足もとに水色の輪が出る。長押ししてから離すと浮き玉）、A と B を同時に押すとロングシュート（どこからでもゴールへ。左右を入れるとすみを狙う）</li>
       <li>点数: ボールを奪う +50、パスが味方に届く +30、枠に飛んだシュート +100（キーパーに取られても）、ドリブルで相手を抜く +50、ゴール +1000（その CNP の初ゴールは さらに +300）。点が入るたびに、その場所に数字が出る</li>
       <li>浮き球: ボールが浮いて近くにあるときに A を押すと、高ければヘディング、低ければボレーで直接蹴る（ゴールの近くで前を向いていればシュート）</li>
@@ -50,6 +50,10 @@
     // 縦画面のアーケード筐体を横長のモニターに映した形で、左右の余白に HUD を置く
     // ================================================================
     const W = 960, H = 540;
+    // 全体の速さ: 選手・ボール・審判が1フレームに進む量にかける倍率（ボールの減速と重力も同じ割合で遅らせるので、道すじは変わらず速さだけ変わる）。
+    // 動きがゆっくりになるぶん、奪う・スライディングなどの「毎フレームの確率」にもかけて、取られやすさを変えない。
+    // 試合時間・溜め・演出の長さなど「時間」は変えない。1 で元の速さ
+    const GAME_SPEED = 0.8;
     const FW = 1300, FH = 476;                 // フィールド（ワールド座標）の長さと幅（トラック込み）
     const LX0 = 70, LX1 = FW - 70;             // ゴールライン（LX0 が画面の下＝CNP チームのゴール）
     const LY0 = 24, LY1 = FH - 24;             // タッチライン
@@ -83,7 +87,7 @@
     const toSX = (y, sy) => VIEW.cx + (y - VIEW.camY) * persp(sy);
     // ワールド (x, y) → 画面の位置と大きさの倍率
     const P = (wx, wy, cam) => { const sy = toSY(wx, cam); return { x: toSX(wy, sy), y: sy, s: persp(sy) }; };
-    const MATCH_FRAMES = 120 * 60;             // 試合時間（2分）
+    const MATCH_FRAMES = 180 * 60;             // 試合時間（3分）
     const TEAM_NAMES = ["CNP", "NINJA"];
     // チームの色（芝とユニフォームはこのゲーム固有の絵なので、ここにまとめる）
     const GRASS = ["#1d6331", "#226e38"];
@@ -851,7 +855,7 @@
           const tgt = owner || b;
           seek(p, tgt.x + (owner ? 0 : b.vx * 8), tgt.y + (owner ? 0 : b.vy * 8), sp);
           // 忍者チームは、近づいたらときどきスライディング
-          if (p.team === 1 && owner && owner.team === 0 && dist(p, owner) < 36 && rnd() < ENEMY.slide) {
+          if (p.team === 1 && owner && owner.team === 0 && dist(p, owner) < 36 && rnd() < ENEMY.slide * GAME_SPEED) {
             const d = dist(p, owner) || 1;
             p.fx = (owner.x - p.x) / d; p.fy = (owner.y - p.y) / d;
             startSlide(p);
@@ -976,7 +980,7 @@
       const inFront = Math.abs(p.y - MIDY) < 170;
       // シュート: ゴールに近く正面寄りで、シュートコースが空いているか、囲まれたら
       const shotLane = distGoal < 270 ? laneClear(p.x, p.y, gx, MIDY, p.team, true) : 0;
-      if (inFront && distGoal < 270 && (distGoal < 150 || pressure < 40 || (shotLane > 14 && rnd() < 0.12))) {
+      if (inFront && distGoal < 270 && (distGoal < 150 || pressure < 40 || (shotLane > 14 && rnd() < 0.12 * GAME_SPEED))) {
         // キーパーのいない側のすみを狙う
         const gk = gkOf(1 - p.team);
         const side = Math.abs(gk.y - MIDY) > 8 ? (gk.y > MIDY ? -1 : 1) : rnd() < 0.5 ? -1 : 1;
@@ -987,7 +991,7 @@
         return;
       }
       // ロングシュート（忍者チームだけ。空いていれば、たまに）
-      if (p.team === 1 && inFront && distGoal > 230 && distGoal < 430 && pressure > 60 && rnd() < ENEMY.longShot) {
+      if (p.team === 1 && inFront && distGoal > 230 && distGoal < 430 && pressure > 60 && rnd() < ENEMY.longShot * GAME_SPEED) {
         p.fx = dir; p.fy = 0;
         return longShot(p, rnd() * 2 - 1);
       }
@@ -1067,9 +1071,9 @@
           const n = Math.hypot(p.vx, p.vy); p.fx = p.vx / n; p.fy = p.vy / n;
         }
       }
-      p.x = clamp(p.x + p.vx, LX0 - 40, LX1 + 40);
-      p.y = clamp(p.y + p.vy, LY0 - 12, LY1 + 12);
-      p.anim += Math.hypot(p.vx, p.vy) * 0.25;
+      p.x = clamp(p.x + p.vx * GAME_SPEED, LX0 - 40, LX1 + 40);
+      p.y = clamp(p.y + p.vy * GAME_SPEED, LY0 - 12, LY1 + 12);
+      p.anim += Math.hypot(p.vx, p.vy) * 0.25 * GAME_SPEED;
     }
 
     function separate() {
@@ -1106,15 +1110,15 @@
         b.z = 0; b.vx = o.vx; b.vy = o.vy; b.vz = 0;
         return;
       }
-      b.x += b.vx; b.y += b.vy; b.z += b.vz;
-      if (b.z > 0) b.vz -= 0.25;
+      b.x += b.vx * GAME_SPEED; b.y += b.vy * GAME_SPEED; b.z += b.vz * GAME_SPEED;
+      if (b.z > 0) b.vz -= GRAVITY * GAME_SPEED;
       if (b.z <= 0) {
         b.z = 0;
         // 浮き玉のスルーパスは、落ちたところで勢いが死ぬ（× のあたりに止まり、走り込んだ味方が拾える）
         if (b.through && b.land && b.vz < -1.2) { b.vx *= THROUGH.lobLandKeep; b.vy *= THROUGH.lobLandKeep; b.land = null; }
         if (b.vz < -1.2) { b.vz = -b.vz * 0.45; SFX.bounce(); } else b.vz = 0;
       }
-      const f = b.z > 0 ? 0.993 : 0.972;
+      const f = Math.pow(b.z > 0 ? 0.993 : 0.972, GAME_SPEED);
       b.vx *= f; b.vy *= f;
       // ゴールの中ではネットで止まる
       if (b.x > LX1 && b.y > GY0 && b.y < GY1 && M.freezeKind === "goal") {
@@ -1132,7 +1136,7 @@
         for (let t = 0; t < 2; t++) {
           const g = gkOf(t);
           if (g.stun > 0 || b.z > BAR_Z + 6 || dist(g, b) > 22) continue;
-          if (b.lastTeam === t && b.vx * attackDir(t) > 0) continue; // 味方のバックパスは手を使わず普通に拾う
+          if (b.lastTeam === t) continue; // 味方が蹴ったボール（パス・バックパス）は手で取らない（転がってきたら普通に拾う）
           const sp = Math.hypot(b.vx, b.vy);
           const K = KEEPER[t];
           let chance = sp < K.midSpeed ? K.catchSlow : sp < K.fastSpeed ? K.catchMid : K.catchFast;
@@ -1185,7 +1189,7 @@
           const d = dist(p, o);
           if (p.isGK) {
             // キーパーはゴール前までドリブルしてきた相手から、ボールを取りに行く
-            if (d < 18 && Math.abs(o.x - ownGoalX(p.team)) < 60 && rnd() < 0.12) {
+            if (d < 18 && Math.abs(o.x - ownGoalX(p.team)) < 60 && rnd() < 0.12 * GAME_SPEED) {
               o.stun = 24; giveBall(p); SFX.catch(); return;
             }
             continue;
@@ -1208,7 +1212,7 @@
             refJudge("playon");
             return;
           }
-          const stealP = (p.team === 0 ? 0.1 : ENEMY.steal) * (shielded ? SHIELD.stealMul : 1);
+          const stealP = (p.team === 0 ? 0.1 : ENEMY.steal) * (shielded ? SHIELD.stealMul : 1) * GAME_SPEED;
           if (p.slide === 0 && p.kickCd === 0 && d < 14 && o.hold > 8 && rnd() < stealP) {
             o.stun = 18;
             giveBall(p);
@@ -1378,8 +1382,8 @@
       const sp = d > 4 ? Math.min(2.4, d * 0.08) : 0;
       r.vx += ((d ? (dx / d) * sp : 0) - r.vx) * 0.2;
       r.vy += ((d ? (dy / d) * sp : 0) - r.vy) * 0.2;
-      r.x += r.vx; r.y += r.vy;
-      r.anim += Math.hypot(r.vx, r.vy) * 0.3;
+      r.x += r.vx * GAME_SPEED; r.y += r.vy * GAME_SPEED;
+      r.anim += Math.hypot(r.vx, r.vy) * 0.3 * GAME_SPEED;
     }
 
     function endMatch() {
@@ -1460,7 +1464,7 @@
       help: {
         mobile: "左のスティックで移動、右側の空いたところを押している間ダッシュ。A でシュート・スライディング、B でパス（長押しで浮き玉）・切り替え、A＋B でロングシュート",
         pc: "矢印 / WASD で移動、C を押している間ダッシュ、X でシュート・スライディング、Z でパス（長押しで浮き玉）・切り替え、X＋Z でロングシュート（P で一時停止）",
-        playing: "キックオフ！ 2分で相手より多く点を取れば勝ち",
+        playing: "キックオフ！ 3分で相手より多く点を取れば勝ち",
       },
       onStart: () => { clearPending(); clearDash(); newMatch(); },
       // ポーズ・設定・タブ切り替えなどで入力が消えたら、ダッシュの押しっぱなしも解く
@@ -1957,7 +1961,7 @@
         ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(bx, 330 - bz, 7, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.beginPath(); ctx.ellipse(bx, 338, 7, 2.5, 0, 0, Math.PI * 2); ctx.fill();
         ctx.font = k.retro.fontBody(14); ctx.fillStyle = c.ink; ctx.textAlign = "center";
-        ctx.fillText(practice ? "キーパーだけを相手に、パス・シュート・ヘディングの練習" : "CNP チーム vs 忍者チーム ・ 2分間の試合で勝てばクリア", W / 2, 380);
+        ctx.fillText(practice ? "キーパーだけを相手に、パス・シュート・ヘディングの練習" : "CNP チーム vs 忍者チーム ・ 3分間の試合で勝てばクリア", W / 2, 380);
         // 審判のちび咲耶: 笛 → 指さし → 両腕を前へ、をくり返す
         // 審判のちび咲耶（設定画の全身）。ときどき笛を吹く
         const glow = ctx.createRadialGradient(120, 430, 10, 120, 430, 110);

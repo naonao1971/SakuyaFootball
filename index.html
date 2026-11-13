@@ -176,7 +176,7 @@
     // キーパーがクロスに飛び出す範囲（落ちる場所がゴールラインから depth 以内・ゴールの真ん中から横に width 以内）と速さ
     const KEEPER_CLAIM = { depth: 70, width: 90, speed: 2.8 };
     // ヘディングの競り合い: 攻める選手が浮き球を頭・足で合わせるとき、ボールから reach 以内に守る選手がいれば、lose の確率で守る側が跳ね返す
-    const HEADER_CONTEST = { reach: 24, lose: 0.55 };
+    const HEADER_CONTEST = { reach: 24, lose: 0.65 };
     const KEEPER_HOLD_MIN = 40, KEEPER_HOLD_MAX = 170; // キーパーがボールを持つ長さ（フレーム）
     // CNP のキーパーがボールを持ったら、操作がキーパーに移る（スティックで向き、B でパス・長押しで浮き玉、A で大きく蹴る）。
     // KEEPER_CONTROL_MIN フレームまではボタンを受け付けない（キャッチした瞬間の押しっぱなしで蹴らないように）。

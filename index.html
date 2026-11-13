@@ -1643,37 +1643,37 @@
       ctx.restore();
     }
 
+    // 選手は元の絵（CNPの上半身・クリプト忍者のドット絵）をそのまま出す。体や足は描き足さない。
+    // チームは足もとの色つきの輪っかで見分ける。走るとぴょこぴょこ跳ね、蹴るときは前に傾く
     function drawPlayerBody(ctx, p, k, x, y) {
-      const shirt = p.isGK ? SHIRT[p.team].gk : SHIRT[p.team].field;
+      const ring = p.isGK ? SHIRT[p.team].gk : SHIRT[p.team].field;
+      const SZ = 34;
+      // 足もとの影と輪っか
       ctx.fillStyle = "rgba(0,0,0,0.35)";
-      ctx.beginPath(); ctx.ellipse(x, y + 2, 9, 3.5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(x, y + 1, 11, 4, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = ring; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.ellipse(x, y, 12, 4.5, 0, 0, Math.PI * 2); ctx.stroke();
       const down = p.slide > 0 || p.stun > 10;
+      const face = p.fy < -0.2 ? -1 : 1; // 画面の左へ向かうときは左右を反転
+      let lift = 0, rot = 0;
       if (down) {
-        // 倒れている / 滑っている（画面の左右どちらに倒れるか）
+        // 倒れている / 滑っている: 絵ごと横に倒す
         const dir = Math.sign(p.slide > 0 ? p.vy || p.fy : p.fy) || 1;
-        ctx.fillStyle = shirt; ctx.fillRect(x - 10, y - 8, 20, 8);
-        ctx.fillStyle = "#f4f4f4"; ctx.fillRect(x + (dir > 0 ? 8 : -14), y - 6, 6, 5);
-        drawHead(ctx, p, k, x - dir * 12, y - 8, 22);
-        return;
-      }
-      // ヘディングは跳ぶ、ボレーは足を振り上げる
-      const jump = p.act && p.act.kind === "head" ? Math.round(Math.sin((p.act.t / 16) * Math.PI) * 12) : 0;
-      const by = y - jump;
-      const step = Math.sin(p.anim) * 3;
-      ctx.fillStyle = "#f4f4f4";
-      if (p.act && p.act.kind === "volley") {
-        const side = p.fy >= 0 ? 1 : -1;
-        ctx.fillRect(x - 5, by - 6, 3, 7);
-        ctx.fillRect(x + (side > 0 ? 4 : -13), by - 12, 9, 3);
+        rot = dir * Math.PI * 0.45; lift = -6;
+      } else if (p.act && p.act.kind === "head") {
+        lift = Math.round(Math.sin((p.act.t / 16) * Math.PI) * 12); // ヘディングは跳ぶ
+      } else if (p.act && p.act.kind === "volley") {
+        rot = face * 0.35; // ボレーは前に傾く
       } else {
-        ctx.fillRect(x - 5, by - 6 + Math.max(0, step), 3, 7 - Math.max(0, step));
-        ctx.fillRect(x + 2, by - 6 + Math.max(0, -step), 3, 7 - Math.max(0, -step));
+        const sp = Math.hypot(p.vx || 0, p.vy || 0);
+        if (sp > 0.15) { lift = Math.abs(Math.sin(p.anim)) * 3; rot = face * 0.08; }
       }
-      ctx.fillStyle = shirt;
-      ctx.fillRect(x - 7, by - 17, 14, 12);
-      ctx.fillStyle = "rgba(0,0,0,0.25)";
-      ctx.fillRect(x - 7, by - 7, 14, 2);
-      drawHead(ctx, p, k, x, by - 26, 26);
+      ctx.save();
+      ctx.translate(x, y - lift);
+      ctx.rotate(rot);
+      ctx.scale(face, 1);
+      drawHead(ctx, p, k, 0, -SZ / 2, SZ);
+      ctx.restore();
     }
 
     // ちび咲耶（審判）。設定画（assets/）に合わせ、黒髪の高いポニーテールに長い赤いリボン、茶色の目、
@@ -1835,7 +1835,7 @@
       if (p.team === 0 && p.ch) { k.cnp.draw(ctx, p.ch, x, y, size); return; }
       if (p.team === 1 && p.nin && artReady(ninjaImg(p.nin))) {
         // クリプト忍者（ドット絵なので、ぼかさずに描く）
-        const sz = size * 1.1;
+        const sz = size;
         ctx.save(); ctx.imageSmoothingEnabled = false;
         ctx.drawImage(ninjaImg(p.nin), Math.round(x - sz / 2), Math.round(y - sz / 2), Math.round(sz), Math.round(sz));
         ctx.restore();

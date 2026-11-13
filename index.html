@@ -59,6 +59,7 @@
       <li>セーブ: 忍者チームのシュートがゴールへ飛んでくると、操作が CNP のキーパーに移る。スティックで動き、B でキャッチ、A でパンチング（押すとボールへ飛びつく）。ボタンを押さずに当たると取りにくい。ボールがゴールへ向かわなくなったら、フィールドの選手に戻る</li>
       <li>ファウル: 後ろからのスライディングは必ずファウル、横からは半々。前からならクリーン。ファウルされた側の直接フリーキック（ゴールに近いと相手が2人で壁を作る）。CNP が蹴るときは、近ければ A でシュート（▼でねらう・長押しで強く）、遠ければ A で大きく前へ。B はパス</li>
       <li>PK: ペナルティエリアの中でファウルされたら PK。ゴールが9マスに分かれた画面が出るので、スティックで蹴る場所（守るときはキーパーが飛ぶ場所）を選んで A。キーパーと同じマスなら止められ、上下にひとつずれなら半々。上の段のすみはたまに枠の外へ</li>
+      <li>PK戦: 同点で試合が終わったら PK戦。5本ずつ交互に蹴り（5人目はキーパー）、決まらなければ1本ずつのサドンデス。右の欄に ●（決めた）×（外した）が並びます。勝てばクリア</li>
       <li>ショルダーチャージ: ボールを持った相手と横に並んでいるときに A を押すと、肩で当たって奪いにいく（ダッシュ中は成功しやすい）。失敗するとよろける</li>
       <li>練習モード: ⚙ の「練習モード（キーパーだけ）」を ON にしてスタート。相手はキーパーだけで、時間切れもランキング登録もない。OFF にすると普通の試合に戻る</li>
       <li>PC: 矢印 / WASD で移動 ・ X が A ・ Z が B ・ C を押している間ダッシュ ・ P 一時停止 ・ M 音</li>
@@ -174,6 +175,8 @@
     //   ready フレームまでは決められない。choose フレームたったら、そのとき選んでいるマスで決まる。
     //   同じマス→止める。同じ列で上下にひとつずれ→ halfSave の確率で止める。それ以外はゴール。上の段のすみは miss の確率で枠の外。
     //   fly: ボールが飛ぶフレーム数
+    // PK戦（同点で試合終了のとき）: 5本ずつ交互に蹴り、決まらなければ1本ずつのサドンデス。gap: 1本ごとの間（フレーム）
+    const SHOOTOUT = { rounds: 5, gap: 70 };
     const PK = { boxDepth: 158, boxHalf: 130, spot: 92, ready: 15, choose: 300, halfSave: 0.5, miss: 0.15, fly: 34, rowZ: [27, 15, 4], colY: 0.62 };
     const RETREAT_MARGIN = 20;                 // キーパーが持ったとき、相手はハーフラインからこれだけ自陣側へ下がる
     // 風: 試合ごとに向きと強さ（0〜max m/s）を決める。浮いているボールだけが流される（高いほど強く、高さ fullZ 以上で最大）。
@@ -217,7 +220,7 @@
     // 点数の表示（+50 など）: 出ている長さ（フレーム）、上へ動く速さ、同時に出す数の上限
     const POPUP = { life: 40, lifeBig: 70, rise: 0.6, max: 4 };
     // 細かいプレーの点（CNP チームだけ）: ボールを奪う・スライディングで奪う・パスが味方に届く・枠に飛んだシュート・ドリブルで相手を抜く・ゴール・その CNP の初ゴール
-    const POINTS = { steal: 50, tackle: 50, pass: 30, onTarget: 100, beat: 50, goal: 1000, firstGoal: 300 };
+    const POINTS = { steal: 50, tackle: 50, pass: 30, onTarget: 100, beat: 50, goal: 1000, firstGoal: 300, soGoal: 300 };
     // シュートのねらいの矢印: ボールを持って、ゴールまで SHOT_AIM_RANGE 以内のときだけ出す。
     // ▼はゴールの上を左右に一定の速さで行ったり来たりし、A を押した瞬間の▼の位置へシュートが飛ぶ（スティックの向きは関係なし）。
     // AIM_SWEEP.speed: ▼が動く速さ（1フレームあたりのドット。ゆっくりめから。遊んで決める）、
@@ -295,7 +298,7 @@
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
         ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null, mood: "normal", moodT: 0 },
-        practice, throughPreview: null, dashT: 0, passThrough: false, cam: CAM_MIN, camY: MIDY, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, aimY: null, aimDir: 1, aimLock: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0,
+        practice, throughPreview: null, dashT: 0, passThrough: false, cam: CAM_MIN, camY: MIDY, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, aimY: null, aimDir: 1, aimLock: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0, so: null,
       };
       kickoff(0);
     }
@@ -647,7 +650,9 @@
         if (M.freezeKind === "kickoff" && M.freeze === 22) { setPose("whistle", 24); SFX.whistle(false); }
         if (--M.freeze === 0) {
           if (M.freezeKind === "goal") kickoff(M.practice ? 0 : M.kickoffTeam); // 練習ではいつも CNP のキックオフ
-          else if (M.freezeKind === "fulltime") endMatch();
+          else if (M.freezeKind === "fulltime") { if (!M.practice && M.goals[0] === M.goals[1]) startShootout(); else endMatch(); }
+          else if (M.freezeKind === "shootout") shootoutNext();
+          else if (M.freezeKind === "soend") endMatch();
         }
         return;
       }
@@ -1634,16 +1639,21 @@
     // PK: team が蹴る。fouled（ファウルされた選手）が蹴る
     function penaltyKick(team, fouled) {
       const b = M.ball, gx = oppGoalX(team), dir = attackDir(team);
-      const kicker = fouled && !fouled.isGK ? fouled : nearestField(team, b);
+      const kicker = fouled && (!fouled.isGK || M.so) ? fouled : nearestField(team, b);
       const keeper = gkOf(1 - team);
       const sx = gx - dir * PK.spot;
       Object.assign(b, { x: sx, y: MIDY, z: 0, vx: 0, vy: 0, vz: 0, owner: null, passTarget: null, land: null, through: null, gkIgnore: 0 });
       for (const p of M.players) { p.vx = p.vy = p.tvx = p.tvy = 0; p.slide = 0; p.stun = 0; p.act = null; }
       kicker.x = sx - dir * 14; kicker.y = MIDY + 6; kicker.fx = dir; kicker.fy = 0;
       keeper.x = gx - dir * 4; keeper.y = MIDY; keeper.fx = -dir; keeper.fy = 0;
+      // PK戦では、蹴らない選手はセンターサークルに並ぶ（キーパーも）
+      if (M.so) {
+        const rest = M.players.filter((p) => p !== kicker && p !== keeper);
+        rest.forEach((p, j) => { p.x = MIDX + (p.team === 0 ? -1 : 1) * 10; p.y = MIDY + (j - (rest.length - 1) / 2) * 16; p.fx = dir; p.fy = 0; });
+      }
       // ほかの選手はエリアの外へ（横に並ぶ）
       let i = 0;
-      for (const p of M.players) {
+      if (!M.so) for (const p of M.players) {
         if (p === kicker || p.isGK) continue;
         if (inPenaltyBox(team, p.x, p.y) || Math.abs(p.x - sx) < 60) {
           p.x = gx - dir * (PK.boxDepth + 14 + (i % 2) * 16); p.y = MIDY + (i - 3) * 22; i++;
@@ -1654,9 +1664,8 @@
       M.pk = { team, kicker, keeper, phase: "choose", t: 0, cur: { c: 1, r: 1 }, stickN: true, kick: null, dive: null, from: null, to: null, result: null };
       setControlled(team === 0 ? kicker : keeper, false);
       M.lastKicker = kicker;
-      freeze(60, "restart", "PENALTY KICK");
-      refJudge("pk", team);
-      SFX.whistle(true);
+      if (M.so) { freeze(50, "restart", `${TEAM_NAMES[team]} KICK ${M.so.kicks[team].length + 1}`); setPose("whistle", 24); SFX.whistle(false); }
+      else { freeze(60, "restart", "PENALTY KICK"); refJudge("pk", team); SFX.whistle(true); }
     }
 
     // マス（c: 0〜2 左から, r: 0〜2 上から）→ ゴールの中の場所。画面の左がワールドの y の小さい側
@@ -1731,6 +1740,7 @@
       pk.kicker.act = null; pk.keeper.act = null; pk.keeper.vy = 0;
       M.lastKicker = pk.kicker;
       b.lastTeam = pk.team;
+      if (M.so) return shootoutResult(pk);
       if (pk.result === "goal") {
         b.vx = attackDir(pk.team) * 3; b.vy = 0; b.vz = 0;
         return scoreGoal(pk.team);
@@ -1745,6 +1755,61 @@
       // 枠の外: ゴールキック
       goalKick(1 - pk.team);
       M.caption = "MISS!";
+    }
+
+    // ================================================================
+    // PK戦: 同点で試合終了したら。蹴る順はコイントス、FW から順に、5人目はキーパー。
+    // 5本ずつで決まらなければ1本ずつのサドンデス。追いつけなくなった時点で終わり
+    // ================================================================
+    function startShootout() {
+      M.so = { first: rnd() < 0.5 ? 0 : 1, kicks: [[], []], winner: -1 };
+      M.so.next = M.so.first;
+      M.setPiece = null; M.throwPreview = null; M.confetti = [];
+      freeze(90, "shootout", "PK SHOOTOUT");
+      setPose("whistle", 30); say(`PK戦！ ${M.so.first === 0 ? "CNP" : "忍者"}チームから`, 90); mood("surprised", 60);
+      SFX.whistle(true);
+    }
+
+    function shootoutNext() {
+      const so = M.so, team = so.next;
+      // FW（idx の大きい順）→ … → キーパー、の順でくり返す
+      const order = fieldOf(team).sort((a, c) => c.idx - a.idx).concat([gkOf(team)]);
+      penaltyKick(team, order[so.kicks[team].length % order.length]);
+    }
+
+    // 決まったかどうか: 5本ずつの間は「残りを全部決めても追いつけない」とき、そのあとは同じ本数を蹴って差がついたとき
+    function shootoutWinner() {
+      const so = M.so, n = [so.kicks[0].length, so.kicks[1].length];
+      const g = [0, 1].map((t) => so.kicks[t].filter(Boolean).length);
+      if (n[0] <= SHOOTOUT.rounds && n[1] <= SHOOTOUT.rounds) {
+        const left = [SHOOTOUT.rounds - n[0], SHOOTOUT.rounds - n[1]];
+        if (g[0] + left[0] < g[1]) return 1;
+        if (g[1] + left[1] < g[0]) return 0;
+        if (n[0] < SHOOTOUT.rounds || n[1] < SHOOTOUT.rounds) return -1;
+      }
+      if (n[0] === n[1] && g[0] !== g[1]) return g[0] > g[1] ? 0 : 1;
+      return -1;
+    }
+
+    function shootoutResult(pk) {
+      const so = M.so, ok = pk.result === "goal";
+      so.kicks[pk.team].push(ok);
+      if (pk.result === "save") giveBall(pk.keeper, false);
+      if (ok) { SFX.whistle(false); if (pk.team === 0) addPoints(POINTS.soGoal, M.ball.x, M.ball.y); }
+      else SFX.catch();
+      if (!ok && pk.keeper.team === 0) addPoints(POINTS.onTarget, pk.keeper.x, pk.keeper.y);
+      say(ok ? "決まった！" : pk.result === "save" ? "止めた！" : "外れた！", 50);
+      mood(ok ? "happy" : "surprised", 50);
+      so.next = 1 - pk.team;
+      so.winner = shootoutWinner();
+      if (so.winner >= 0) {
+        freeze(180, "soend", "PK SHOOTOUT");
+        setPose("fulltime", 150); say(`${so.winner === 0 ? "CNP" : "忍者"}チームの勝ち！`, 150); mood("happy", 150);
+        SFX.whistle(true);
+        if (so.winner === 0) M.flash = GOAL_FX.flash;
+        return;
+      }
+      freeze(SHOOTOUT.gap, "shootout", ok ? "GOAL!" : pk.result === "save" ? "SAVE!" : "MISS!");
     }
 
     // 直接フリーキック: ファウルされた側（team）が、ファウルの場所から蹴る。fouled: ファウルされた選手（その選手が蹴る）
@@ -2004,9 +2069,11 @@
       if (M.ended) return;
       M.ended = true;
       const [g0, g1] = M.goals;
-      const win = g0 > g1;
-      if (win) kit.score.add(3000 + (g0 - g1) * 500);
-      kit.gameOver({ cleared: win, progress: win ? 100 : g0 === g1 ? 50 : 25 });
+      const soWin = M.so ? M.so.winner === 0 : false;
+      const win = g0 > g1 || soWin;
+      if (g0 > g1) kit.score.add(3000 + (g0 - g1) * 500);
+      else if (soWin) kit.score.add(2000); // PK戦の勝ちは、試合の勝ちより少し少なめ
+      kit.gameOver({ cleared: win, progress: win ? 100 : M.so ? 50 : 25 });
     }
 
     // ================================================================
@@ -2097,7 +2164,7 @@
     });
     window.kit = kit; // デバッグ用・playtest が読む（消さない）
     window.match = () => M; // デバッグ用
-    window.__sim = { newMatch: () => newMatch(), step: (cmd) => stepMatch(cmd), pk: (team) => penaltyKick(team, null) }; // 自動テスト用（試合を早送りする）
+    window.__sim = { newMatch: () => newMatch(), step: (cmd) => stepMatch(cmd), pk: (team) => penaltyKick(team, null), shootout: () => { M.timer = MATCH_FRAMES; M.goals = [1, 1]; startShootout(); }, M: () => M }; // 自動テスト用（試合を早送りする）
 
     // ================================================================
     // 描画（フィールドは縦長。芝と線は回して描き、選手とボールは位置だけ回して立てたまま描く）
@@ -2547,6 +2614,8 @@
         ctx.font = k.retro.font(9); ctx.fillStyle = "#3bd1ff"; ctx.fillText("PRACTICE", cx, 92);
         ctx.font = k.retro.font(20); ctx.fillStyle = c.ink;
         ctx.fillText(`${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`, cx, 118);
+      } else if (M.so) {
+        drawShootoutBoard(ctx, k, x0, cx);
       } else {
         const left = Math.max(0, Math.ceil((MATCH_FRAMES - M.timer) / 60));
         ctx.font = k.retro.font(9); ctx.fillStyle = c.gold; ctx.fillText("TIME", cx, 92);
@@ -2564,6 +2633,36 @@
       drawRadar(ctx, k, x0 + 14, 190, 62, 150);
       drawRefWindow(ctx, k, x0 + 88, 176, 128, 128);
       drawWind(ctx, k, x0 + 88, 330, 128);
+    }
+
+    // PK戦の成績: 決めたら金の●、外したら赤の×、まだは空の○。サドンデスに入ったら最新の5本だけ見せる
+    function drawShootoutBoard(ctx, k, x0, cx) {
+      const c = k.retro.colors, so = M.so;
+      ctx.font = k.retro.font(9); ctx.fillStyle = c.gold; ctx.textAlign = "center";
+      ctx.fillText("PK SHOOTOUT", cx, 78);
+      const shown = Math.max(SHOOTOUT.rounds, so.kicks[0].length, so.kicks[1].length);
+      const from = shown - SHOOTOUT.rounds;
+      for (let t = 0; t < 2; t++) {
+        const y = 98 + t * 22;
+        ctx.font = k.retro.font(8); ctx.textAlign = "left"; ctx.fillStyle = SHIRT[t].field;
+        ctx.fillText(TEAM_NAMES[t], x0 + 10, y + 4);
+        const g = so.kicks[t].filter(Boolean).length;
+        ctx.textAlign = "right"; ctx.fillStyle = c.ink; ctx.font = k.retro.font(11);
+        ctx.fillText(String(g), x0 + PANEL_W - 10, y + 5);
+        for (let i = 0; i < SHOOTOUT.rounds; i++) {
+          const r = so.kicks[t][from + i], px = x0 + 82 + i * 22;
+          const nextUp = !M.ended && so.winner < 0 && so.next === t && so.kicks[t].length === from + i;
+          ctx.lineWidth = 2;
+          if (r === true) { ctx.fillStyle = c.gold; ctx.beginPath(); ctx.arc(px, y, 7, 0, Math.PI * 2); ctx.fill(); }
+          else if (r === false) {
+            ctx.strokeStyle = c.danger; ctx.beginPath();
+            ctx.moveTo(px - 6, y - 6); ctx.lineTo(px + 6, y + 6); ctx.moveTo(px + 6, y - 6); ctx.lineTo(px - 6, y + 6); ctx.stroke();
+          } else {
+            ctx.strokeStyle = nextUp && k.retro.blinkOn(10) ? c.magenta : "rgba(255,255,255,0.3)";
+            ctx.beginPath(); ctx.arc(px, y, 6, 0, Math.PI * 2); ctx.stroke();
+          }
+        }
+      }
     }
 
     // フィールドの上の帯: 左に CNP の5人、右に忍者の5人の顔（咲耶スクランブルの上段のロスターと同じ考え方）。
@@ -2913,7 +3012,10 @@
           if (k.retro.blinkOn(12)) k.retro.caption("GOAL!!", `${TEAM_NAMES[0]} ${M.goals[0]} - ${M.goals[1]} ${TEAM_NAMES[1]}`, M.kickoffTeam === 1 ? c.gold : c.danger);
         } else if (M.freezeKind === "fulltime") {
           const [g0, g1] = M.goals;
-          k.retro.caption("FULL TIME", g0 > g1 ? "CNP チームの勝ち！" : g0 === g1 ? "引き分け" : "忍者チームの勝ち");
+          k.retro.caption("FULL TIME", g0 > g1 ? "CNP チームの勝ち！" : g0 === g1 ? (M.practice ? "引き分け" : "引き分け → PK戦へ！") : "忍者チームの勝ち");
+        } else if (M.freezeKind === "soend") {
+          const g = [0, 1].map((t) => M.so.kicks[t].filter(Boolean).length);
+          if (k.retro.blinkOn(12)) k.retro.caption("PK SHOOTOUT", `${M.so.winner === 0 ? "CNP チーム" : "忍者チーム"}の勝ち！（PK ${g[0]}-${g[1]}）`, M.so.winner === 0 ? c.gold : c.danger);
         } else {
           ctx.save();
           ctx.font = k.retro.font(14); ctx.textAlign = "center";
@@ -2936,7 +3038,7 @@
       k.retro.panel(px, py, pw, ph);
       ctx.textAlign = "center";
       ctx.font = k.retro.font(10); ctx.fillStyle = c.gold;
-      ctx.fillText("PENALTY KICK", px + pw / 2, py + 18);
+      ctx.fillText(M.so ? `PK SHOOTOUT  ${TEAM_NAMES[pk.team]} KICK ${M.so.kicks[pk.team].length + 1}` : "PENALTY KICK", px + pw / 2, py + 18);
       ctx.font = k.retro.fontBody(12); ctx.fillStyle = "#ffffff";
       const choosing = pk.phase === "choose";
       ctx.fillText(choosing ? (pk.team === 0 ? "どこへ蹴る？" : "どこへ飛ぶ？") + "  スティックで選んで A" : "", px + pw / 2, py + 36);

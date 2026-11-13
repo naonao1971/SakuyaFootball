@@ -56,6 +56,7 @@
       <li>スルーパス: ボールを持ってダッシュしながら、またはダッシュをやめてすぐ（約0.7秒以内）に B を押すと、向いた方向の先の空いたところへパス。行き先に水色の ×、走り込む味方に水色の輪が出て、その味方が全力で走り込む。B を長押しすると浮き玉のスルーパス（「LOB THROUGH」。相手の頭を越えて、もっと遠くへ）</li>
       <li>体でキープ: ボールを持っているとき、近くの忍者に背中を向ける（スティックで忍者と反対の方を向く）と、体でボールを守って取られにくくなる。足もとに金の弧と「KEEP」が出る。後ろからのスライディングも空振りしやすい</li>
       <li>キーパー: CNP のキーパーがボールを持つと、操作がキーパーに移る。スティックで向きを変え、B で向いている方の味方の足もとへパス（長押しで浮き玉）、A で前へ大きく蹴る。何もしなければ約4秒で自動で蹴る</li>
+      <li>セーブ: 忍者チームのシュートがゴールへ飛んでくると、操作が CNP のキーパーに移る。スティックで動き、B でキャッチ、A でパンチング（押すとボールへ飛びつく）。ボタンを押さずに当たると取りにくい。ボールがゴールへ向かわなくなったら、フィールドの選手に戻る</li>
       <li>練習モード: ⚙ の「練習モード（キーパーだけ）」を ON にしてスタート。相手はキーパーだけで、時間切れもランキング登録もない。OFF にすると普通の試合に戻る</li>
       <li>PC: 矢印 / WASD で移動 ・ X が A ・ Z が B ・ C を押している間ダッシュ ・ P 一時停止 ・ M 音</li>
       <li>姉妹作: <a href="https://sakuya.naoblock.com/">咲耶スクランブル</a> / <a href="https://rally.naoblock.jp/">咲耶Nounラリー</a> / <a href="https://jumpbug.naoblock.jp/">咲耶ジャンプバグ</a></li>
@@ -182,6 +183,14 @@
     // KEEPER_CONTROL_MIN フレームまではボタンを受け付けない（キャッチした瞬間の押しっぱなしで蹴らないように）。
     // 何もしなければ KEEPER_CONTROL_MAX フレームで、AI と同じように前の味方へ大きく蹴る
     const KEEPER_CONTROL_MIN = 12, KEEPER_CONTROL_MAX = 240;
+    // キーパー操作（セーブ）: 忍者チームのシュートが CNP のゴールへ向かってきたら、操作がキーパーに移る。
+    //   シュートとみなすのは: 速さ minSpeed 以上で、ゴールラインまで range 以内、ゴールの枠（左右に margin の余裕）へ向かうボール。
+    //   B=キャッチ・A=パンチング。押すと t フレームのあいだ、ボールが来るところへ dive の速さで飛びつく（届く距離は reach）。
+    //   キャッチの確率（ボールの速さ別）: catchSlow / catchMid / catchFast。パンチングは届けば必ずはじく（前へ punchSpeed）。
+    //   ボタンを押さずに体に当たったときは、いつもの確率に noButton をかける。
+    //   ボールがゴールへ向かわなくなって release フレームたったら、フィールドの選手に操作を戻す
+    const GK_SAVE = { minSpeed: 3.5, range: 330, margin: 18, t: 16, dive: 3.6, move: 2.4,
+      reach: { catch: 26, punch: 30 }, catchSlow: 0.98, catchMid: 0.88, catchFast: 0.7, punchSpeed: 7, noButton: 0.6, release: 20 };
     // 操作中の選手のシュートの速さ: base + 溜め（0〜1）× charge
     const SHOT = { base: 7.5, charge: 6 };
     // ゴールの演出（CNP が決めたとき。忍者チームのときは控えめ: 下のスタンドだけ・紙吹雪なし・揺れなし）
@@ -320,6 +329,7 @@
     function setControlled(p, sound = true) {
       if (!p || p === M.controlled) return;
       M.controlled = p;
+      if (!p.isGK) M.gkSave = null;
       M.switchFlash = SWITCH_FLASH;
       M.passPreview = null;
       if (sound) SFX.switch();
@@ -633,8 +643,18 @@
       if (!c) return;
       M.stickIdle = Math.hypot(cmd.ax, cmd.ay) <= 0.08 ? M.stickIdle + 1 : 0;
       if (M.setPiece && M.setPiece.taker === c) return setPieceHuman(c, cmd);
+      // 忍者チームのシュートが飛んできたら、操作をキーパーへ
+      if (!c.isGK && !M.setPiece && shotIncoming(0)) {
+        const g = gkOf(0);
+        if (g && g.stun === 0) {
+          setControlled(g); M.gkSave = { idle: 0 };
+          M.charge = -1; M.passCharge = -1; M.passPreview = null; M.shotAim = null; M.aimLock = null; M.strikeBuf = 0;
+          return keeperSave(g, cmd);
+        }
+      }
       if (c.isGK) {
         if (b.owner === c) return keeperControl(c, cmd);
+        if (!b.owner && M.gkSave) return keeperSave(c, cmd);
         // キーパーがボールを離したら、ボールに近いフィールドの選手に操作を戻す
         setControlled(nearestField(0, b), false);
         M.passCharge = -1; M.charge = -1;
@@ -764,6 +784,61 @@
         M.shotAim = null; M.aimY = null;
         if (b.owner !== cc) M.aimLock = null;
       }
+    }
+
+    // team のゴールへシュートが向かってきているか（ゴールラインを越えるときの横位置が枠の中なら true）
+    function shotIncoming(team) {
+      const b = M.ball;
+      if (b.owner || b.lastTeam === team || b.z > BAR_Z + 6) return false;
+      const gx = ownGoalX(team), dir = attackDir(team);
+      const vx = b.vx * dir; // 自分のゴールへ向かうときは マイナス
+      if (vx > -1 || Math.hypot(b.vx, b.vy) < GK_SAVE.minSpeed) return false;
+      const dx = (b.x - gx) * dir;
+      if (dx < -4 || dx > GK_SAVE.range) return false;
+      const y = b.y + b.vy * (dx / -vx);
+      return y > GY0 - GK_SAVE.margin && y < GY1 + GK_SAVE.margin;
+    }
+
+    // ボールがキーパーの立つ線（ゴールラインの少し前）を越える横位置
+    function saveSpotY(g) {
+      const b = M.ball, lineX = g.x;
+      if (Math.abs(b.vx) < 0.3) return b.y;
+      const t = (lineX - b.x) / b.vx;
+      return clamp(t > 0 ? b.y + b.vy * t : b.y, GY0 - 14, GY1 + 14);
+    }
+
+    // CNP のキーパーで、飛んでくるシュートを止める操作。
+    // スティックで動く（ゴールの前だけ）。何もしなければ AI と同じ位置どり。B でキャッチ、A でパンチング（ボールへ飛びつく）
+    function keeperSave(g, cmd) {
+      const b = M.ball;
+      M.shotAim = null; M.charge = -1; M.passCharge = -1; M.passPreview = null;
+      if (shotIncoming(0)) M.gkSave.idle = 0;
+      else if (++M.gkSave.idle > GK_SAVE.release) {
+        M.gkSave = null;
+        setControlled(nearestField(0, b), false);
+        return;
+      }
+      if (g.stun > 0) return;
+      const act = g.act && (g.act.kind === "catch" || g.act.kind === "punch") ? g.act : null;
+      if (!act && (cmd.bPressed || cmd.aPressed)) {
+        g.act = { kind: cmd.bPressed ? "catch" : "punch", t: GK_SAVE.t };
+        SFX.switch();
+      }
+      const n = Math.hypot(cmd.ax, cmd.ay);
+      if (g.act && (g.act.kind === "catch" || g.act.kind === "punch")) {
+        // 飛びつく: ボールが来るところへ速く動く（スティックを倒していれば、その向きへ）
+        const ty = n > 0.3 ? g.y + (cmd.ay / n) * 40 : saveSpotY(g);
+        const tx = clamp(b.x, LX0 + 6, LX0 + 70);
+        seek(g, Math.abs(b.x - g.x) < 40 ? tx : g.x, ty, GK_SAVE.dive);
+      } else if (n > 0.08) {
+        g.tvx = (cmd.ax / n) * GK_SAVE.move * Math.min(1, n); g.tvy = (cmd.ay / n) * GK_SAVE.move * Math.min(1, n);
+        g.fx = cmd.ax / n; g.fy = cmd.ay / n;
+      } else {
+        stepKeeper(g); // 手を離しているときは AI と同じ位置どり
+      }
+      // ゴールの前から出すぎない
+      g.x = clamp(g.x, LX0 + 4, LX0 + 110);
+      g.y = clamp(g.y, GY0 - 40, GY1 + 40);
     }
 
     // CNP のキーパーがボールを持っている間の操作。キーパーは動かず、スティックで向きを変える
@@ -1221,15 +1296,34 @@
       if (!b.owner && b.gkIgnore === 0) {
         for (let t = 0; t < 2; t++) {
           const g = gkOf(t);
-          if (g.stun > 0 || b.z > BAR_Z + 6 || dist(g, b) > 22) continue;
+          const gAct = t === 0 && M.controlled === g && M.gkSave && g.act ? GK_SAVE.reach[g.act.kind] : 0;
+          if (g.stun > 0 || b.z > BAR_Z + 6 || dist(g, b) > (gAct || 22)) continue;
           if (b.lastTeam === t) continue; // 味方が蹴ったボール（パス・バックパス）は手で取らない（転がってきたら普通に拾う）
           const sp = Math.hypot(b.vx, b.vy);
           const K = KEEPER[t];
           let chance = sp < K.midSpeed ? K.catchSlow : sp < K.fastSpeed ? K.catchMid : K.catchFast;
+          // 人が操作しているキーパー: B=キャッチ / A=パンチング
+          if (t === 0 && M.controlled === g && M.gkSave) {
+            const act = g.act && (g.act.kind === "catch" || g.act.kind === "punch") ? g.act.kind : null;
+            if (act === "punch") {
+              // パンチング: 前（と外側）へ大きくはじく
+              const side = Math.sign(b.y - MIDY) || (rnd() < 0.5 ? -1 : 1);
+              b.vx = attackDir(0) * GK_SAVE.punchSpeed; b.vy = side * (2 + rnd() * 2.5); b.vz = 3.6;
+              b.gkIgnore = 30; b.lastTeam = 0; b.passTarget = null; b.land = null; b.through = null;
+              SFX.shoot(0.6); if (sp > 8) refJudge("save");
+              addPoints(POINTS.onTarget, g.x, g.y);
+              return;
+            }
+            if (act === "catch") chance = sp < K.midSpeed ? GK_SAVE.catchSlow : sp < K.fastSpeed ? GK_SAVE.catchMid : GK_SAVE.catchFast;
+            else chance *= GK_SAVE.noButton;
+          }
           // 上から落ちてくるボールは取りにくい（高いほど）
           const dropping = b.z > 12 && b.vz < 0;
           if (dropping) chance *= b.z > 24 ? 0.45 : 0.75;
-          if (rnd() < chance) { giveBall(g); SFX.catch(); if (sp > 8) refJudge("save"); }
+          if (rnd() < chance) {
+            giveBall(g); SFX.catch(); if (sp > 8) refJudge("save");
+            if (t === 0 && g.act && g.act.kind === "catch") addPoints(POINTS.onTarget, g.x, g.y); // 操作してキャッチ
+          }
           else if (dropping && b.z > 24) {
             // 指先をかすめて、そのままゴールへ
             b.gkIgnore = 30; b.vx *= 0.9; b.vy *= 0.9;
@@ -1931,6 +2025,10 @@
         lift = Math.round(Math.sin((p.act.t / 16) * Math.PI) * 12); // ヘディングは跳ぶ
       } else if (p.act && p.act.kind === "volley") {
         rot = face * 0.35; // ボレーは前に傾く
+      } else if (p.act && (p.act.kind === "catch" || p.act.kind === "punch")) {
+        // キーパーが飛びつく: 動いている横の向きへ体を倒し、少し浮く
+        const k2 = Math.sin((p.act.t / GK_SAVE.t) * Math.PI);
+        rot = (Math.sign(p.vy) || face) * (p.act.kind === "punch" ? 0.5 : 0.8) * k2; lift = Math.round(k2 * 6);
       } else {
         const sp = Math.hypot(p.vx || 0, p.vy || 0);
         if (sp > 0.15) { lift = Math.abs(Math.sin(p.anim)) * 3; rot = face * 0.08; }
@@ -2406,6 +2504,17 @@
         ctx.beginPath(); ctx.ellipse(fx, fy, 12 + 22 * f, 5 + 9 * f, 0, 0, Math.PI * 2); ctx.stroke();
         ctx.lineWidth = 1.5; ctx.strokeStyle = `rgba(255,255,255,${f})`;
         ctx.beginPath(); ctx.ellipse(fx, fy, 8 + 14 * f, 3 + 6 * f, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
+
+      // キーパー操作中の案内（シュートが飛んできているあいだ）
+      if (M.gkSave && M.controlled && M.controlled.isGK && !b.owner && k.phase === "playing") {
+        const g = M.controlled, gq = P(g.x, g.y, cam);
+        ctx.save();
+        ctx.font = k.retro.font(8); ctx.textAlign = "center";
+        const act = g.act && (g.act.kind === "catch" || g.act.kind === "punch") ? g.act.kind : null;
+        ctx.fillStyle = act ? c.gold : k.retro.blinkOn(8) ? "#ffffff" : c.magenta;
+        ctx.fillText(act === "catch" ? "CATCH!" : act === "punch" ? "PUNCH!" : "B:CATCH  A:PUNCH", gq.x, gq.y - 30 * gq.s);
         ctx.restore();
       }
 

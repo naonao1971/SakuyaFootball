@@ -1,0 +1,37 @@
+{
+  "name": "咲耶フットボール",
+  "short_name": "咲耶フットボール",
+  "description": "CNP チームを操って、クリプト忍者チームと3分間戦う。審判はちび咲耶。80年代アーケード風の見下ろし型サッカーゲーム。",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#06070C",
+  "theme_color": "#06070C",
+  "lang": "ja",
+  "icons": [
+    {
+      "src": "favicon-32.png?v=1",
+      "sizes": "32x32",
+      "type": "image/png"
+    },
+    {
+      "src": "apple-touch-icon.png?v=1",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-192.png?v=1",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png?v=1",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

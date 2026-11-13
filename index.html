@@ -22,7 +22,7 @@
   <details class="sk-how" id="how">
     <summary>遊び方</summary>
     <ul>
-      <li>CNP チーム（青）を操って、忍者チーム（赤）と2分間の試合。勝てばクリア</li>
+      <li>CNP チーム（青）を操って、忍者チーム（赤）と3分間の試合。勝てばクリア</li>
       <li>ボールを持っているとき: A でシュート（押し続けると強いシュート。ゴールの近くでボールを持つと、ゴールの上で金の▼が左右に動く。A を押した瞬間の▼の位置へ飛ぶ）、B でパス（向いている方の味方の足元へ。パス先の味方の足もとに水色の輪が出る。長押ししてから離すと浮き玉）、A と B を同時に押すとロングシュート（どこからでもゴールへ。左右を入れるとすみを狙う）</li>
       <li>点数: ボールを奪う +50、パスが味方に届く +30、枠に飛んだシュート +100（キーパーに取られても）、ドリブルで相手を抜く +50、ゴール +1000（その CNP の初ゴールは さらに +300）。点が入るたびに、その場所に数字が出る</li>
       <li>浮き球: ボールが浮いて近くにあるときに A を押すと、高ければヘディング、低ければボレーで直接蹴る（ゴールの近くで前を向いていればシュート）</li>
@@ -87,7 +87,7 @@
     const toSX = (y, sy) => VIEW.cx + (y - VIEW.camY) * persp(sy);
     // ワールド (x, y) → 画面の位置と大きさの倍率
     const P = (wx, wy, cam) => { const sy = toSY(wx, cam); return { x: toSX(wy, sy), y: sy, s: persp(sy) }; };
-    const MATCH_FRAMES = 120 * 60;             // 試合時間（2分）
+    const MATCH_FRAMES = 180 * 60;             // 試合時間（3分）
     const TEAM_NAMES = ["CNP", "NINJA"];
     // チームの色（芝とユニフォームはこのゲーム固有の絵なので、ここにまとめる）
     const GRASS = ["#1d6331", "#226e38"];
@@ -1464,7 +1464,7 @@
       help: {
         mobile: "左のスティックで移動、右側の空いたところを押している間ダッシュ。A でシュート・スライディング、B でパス（長押しで浮き玉）・切り替え、A＋B でロングシュート",
         pc: "矢印 / WASD で移動、C を押している間ダッシュ、X でシュート・スライディング、Z でパス（長押しで浮き玉）・切り替え、X＋Z でロングシュート（P で一時停止）",
-        playing: "キックオフ！ 2分で相手より多く点を取れば勝ち",
+        playing: "キックオフ！ 3分で相手より多く点を取れば勝ち",
       },
       onStart: () => { clearPending(); clearDash(); newMatch(); },
       // ポーズ・設定・タブ切り替えなどで入力が消えたら、ダッシュの押しっぱなしも解く
@@ -1961,7 +1961,7 @@
         ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(bx, 330 - bz, 7, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.beginPath(); ctx.ellipse(bx, 338, 7, 2.5, 0, 0, Math.PI * 2); ctx.fill();
         ctx.font = k.retro.fontBody(14); ctx.fillStyle = c.ink; ctx.textAlign = "center";
-        ctx.fillText(practice ? "キーパーだけを相手に、パス・シュート・ヘディングの練習" : "CNP チーム vs 忍者チーム ・ 2分間の試合で勝てばクリア", W / 2, 380);
+        ctx.fillText(practice ? "キーパーだけを相手に、パス・シュート・ヘディングの練習" : "CNP チーム vs 忍者チーム ・ 3分間の試合で勝てばクリア", W / 2, 380);
         // 審判のちび咲耶: 笛 → 指さし → 両腕を前へ、をくり返す
         // 審判のちび咲耶（設定画の全身）。ときどき笛を吹く
         const glow = ctx.createRadialGradient(120, 430, 10, 120, 430, 110);

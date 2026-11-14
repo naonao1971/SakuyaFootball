@@ -53,7 +53,7 @@
       <li>点数: ボールを奪う +50、パスが味方に届く +30、枠に飛んだシュート +100（キーパーに取られても）、ドリブルで相手を抜く +50、ゴール +1000（その CNP の初ゴールは さらに +300）。点が入るたびに、その場所に数字が出る</li>
       <li>浮き球: ボールが浮いて近くにあるときに A を押すと、高ければヘディング、低ければボレーで直接蹴る（ゴールの近くで前を向いていればシュート）</li>
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（スティックを離すと、ボールに近い選手に自動でも切り替わる。走っている間は切り替わらない。切り替わった選手の足もとが光る）</li>
-      <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ 右上の ⚙ で音・全画面の設定</li>
+      <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B（転がってくるボールに先に押すとダイレクト）・ 右上の ⚙ で音・全画面の設定</li>
       <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を押している間、PC は C キーを押している間、操作中の選手が速くなる。走りすぎるとスタミナが切れて、その選手はしばらくダッシュできない（左のパネルのバー）</li>
       <li>スルーパス: ボールを持ってダッシュしながら、またはダッシュをやめてすぐ（約0.7秒以内）に B を押すと、向いた方向の先の空いたところへパス。行き先に水色の ×、走り込む味方に水色の輪が出て、その味方が全力で走り込む。B を長押しすると浮き玉のスルーパス（「LOB THROUGH」。相手の頭を越えて、もっと遠くへ）</li>
       <li>体でキープ: ボールを持っているとき、近くの忍者に背中を向ける（スティックで忍者と反対の方を向く）と、体でボールを守って取られにくくなる。足もとに金の弧と「KEEP」が出る。後ろからのスライディングも空振りしやすい</li>
@@ -164,6 +164,11 @@
     // ヘディング・ボレー: 浮いているボール（高さ AIR_MIN〜AIR_MAX）に STRIKE_REACH まで近づいて蹴る。HEAD_Z より高ければヘディング。
     // 操作中の選手は、ボールが浮いて近くにあるときに A を押すと、STRIKE_BUFFER フレームのあいだ当たるのを待つ
     const AIR_MIN = 5, AIR_MAX = 40, HEAD_Z = 20, STRIKE_REACH = 20, STRIKE_BUFFER = 20;
+    // ダイレクト: 転がってくるボールが自分に向かっている間（ready 以内の距離）に A か B を先に押すと、足に届いた瞬間に
+    //   止めずに蹴る（A=シュート・B=パス）。向きは届いた瞬間の十字キー。buffer フレームのあいだ押した分を覚える。
+    //   止めてから蹴るより少しぶれる（シュートはねらいの横位置が ±shotBlur、パスは向きが ±passBlur ラジアン）。
+    //   浮き球に B を押すと、頭・足で味方へ落とす（パスの速さ airPass）
+    const DIRECT = { ready: 150, buffer: 30, shotBlur: 0.45, passBlur: 0.09, shotPower: 0.65, airPass: 7 };
     // 体でキープ: ボールを持った選手の後ろ側（向きと反対。向きとの内積が behind 未満）にいる相手は、体にさえぎられて
     // ボールに届きにくい。ぶつかって奪う確率を stealMul 倍にし、後ろからのスライディングは slideMiss の確率で空振りさせる。
     // 操作中の選手の near 以内に、さえぎっている相手がいるときは、足もとに盾の弧と「KEEP」を出す
@@ -226,7 +231,7 @@
     // 点数の表示（+50 など）: 出ている長さ（フレーム）、上へ動く速さ、同時に出す数の上限
     const POPUP = { life: 40, lifeBig: 70, rise: 0.6, max: 4 };
     // 細かいプレーの点（CNP チームだけ）: ボールを奪う・スライディングで奪う・パスが味方に届く・枠に飛んだシュート・ドリブルで相手を抜く・ゴール・その CNP の初ゴール
-    const POINTS = { steal: 50, tackle: 50, pass: 30, onTarget: 100, beat: 50, goal: 1000, firstGoal: 300, soGoal: 300 };
+    const POINTS = { steal: 50, tackle: 50, pass: 30, onTarget: 100, beat: 50, goal: 1000, firstGoal: 300, soGoal: 300, directGoal: 300, directPass: 50 };
     // シュートのねらいの矢印: ボールを持って、ゴールまで SHOT_AIM_RANGE 以内のときだけ出す。
     // ▼はゴールの上を左右に一定の速さで行ったり来たりし、A を押した瞬間の▼の位置へシュートが飛ぶ（スティックの向きは関係なし）。
     // AIM_SWEEP.speed: ▼が動く速さ（1フレームあたりのドット。ゆっくりめから。遊んで決める）、
@@ -377,7 +382,7 @@
     // sound: 操作する選手が変わったときに切り替えの音を鳴らすか（キックオフ・スローインは笛が鳴るので鳴らさない）
     function giveBall(p, sound = true) {
       const b = M.ball;
-      b.owner = p; b.passTarget = null; b.through = null; b.z = 0; b.vz = 0; b.lastTeam = p.team;
+      b.owner = p; b.passTarget = null; b.through = null; b.z = 0; b.vz = 0; b.lastTeam = p.team; b.direct = false;
       p.hold = 0;
       if (p.team === 0) setControlled(p, sound); // ボールを奪った・拾った（CNP のキーパーがキャッチしたら、キーパーを操作する）
     }
@@ -404,7 +409,7 @@
       b.owner = null;
       b.vx = (dx / n) * speed; b.vy = (dy / n) * speed;
       b.vz = vz; b.z = Math.max(b.z, 1);
-      b.lastTeam = p.team; b.passTarget = null; b.land = null; b.through = null; b.gkIgnore = 0;
+      b.lastTeam = p.team; b.passTarget = null; b.land = null; b.through = null; b.gkIgnore = 0; b.direct = false;
       p.kickCd = 14; p.hold = 0;
       M.lastKicker = p;
     }
@@ -613,6 +618,61 @@
       SFX.pass(lob);
     }
 
+    // ---------- ダイレクト（転がってくるボール・浮き球を止めずに蹴る） ----------
+    // 操作中の選手へ、転がってくるボールが向かっているか（自分へのパス、またはこちらへ転がってくるこぼれ球）
+    function directReady(p) {
+      const b = M.ball;
+      if (b.owner || b.z > 3 || p.stun > 0 || p.slide > 0 || p.isGK) return false;
+      const d = dist(p, b);
+      if (d > DIRECT.ready) return false;
+      if (b.passTarget === p) return true;
+      const v = Math.hypot(b.vx, b.vy);
+      if (v < 1.5 || d < 1) return false;
+      return ((p.x - b.x) * b.vx + (p.y - b.y) * b.vy) / (d * v) > 0.8; // ボールの進む先に自分がいる
+    }
+    // 十字キーが倒れていれば、その向きを向く（ダイレクトの向きは、ボールが届いた瞬間の十字キー）
+    function faceStick(p, stick) {
+      const n = stick ? Math.hypot(stick.ax, stick.ay) : 0;
+      if (n > 0.3) { p.fx = stick.ax / n; p.fy = stick.ay / n; }
+    }
+    // 足に届いた瞬間に止めずに蹴る。kind: "shoot" | "pass"
+    function directKick(p, kind, stick) {
+      faceStick(p, stick);
+      const b = M.ball;
+      p.act = { kind: "volley", t: 12 };
+      if (kind === "shoot") {
+        const dir = attackDir(p.team), gx = oppGoalX(p.team), t = DIRECT.shotPower;
+        if (Math.abs(gx - p.x) < 420 && p.fx * dir > -0.3) {
+          // ゴールに近くて、ゴールの方を向いていれば枠へ（十字キーの上下で左右のすみ。止めて蹴るより少しぶれる）
+          // ▼へのシュートと同じ、低く枠へ飛ぶ弾道で蹴る
+          const aim = clamp((stick ? stick.ay : 0) + (rnd() * 2 - 1) * DIRECT.shotBlur, -1, 1);
+          arrowKick(p, shotAimY(aim), SHOT.base + t * SHOT.charge, ARROW_SHOT.zBase + t * ARROW_SHOT.zCharge);
+        } else kick(p, p.fx, p.fy, SHOT.base + t * SHOT.charge, 1 + t * 3.1);
+        SFX.shoot(t);
+        praiseShot(p);
+      } else {
+        const m = facingMate(p, null);
+        if (m) passTo(p, m, false);
+        else { kick(p, p.fx, p.fy, 8, 0); SFX.pass(false); }
+        // 止めて蹴るより少しだけ向きがぶれる
+        const a = (rnd() * 2 - 1) * DIRECT.passBlur, c = Math.cos(a), s = Math.sin(a), vx = b.vx;
+        b.vx = vx * c - b.vy * s; b.vy = vx * s + b.vy * c;
+      }
+      b.direct = true;
+    }
+    // 浮き球を頭・足で味方へ落とす（十字キーの向きの味方。いなければその向きへ）
+    function airPass(p, stick) {
+      faceStick(p, stick);
+      const b = M.ball, header = b.z > HEAD_Z;
+      const m = facingMate(p, null);
+      const tx = m ? m.x : p.x + p.fx * 150, ty = m ? m.y : p.y + p.fy * 150;
+      kick(p, tx - b.x, ty - b.y, DIRECT.airPass, header ? 0.8 : 1.2);
+      if (m) { b.passTarget = m; if (m.team === 0) setControlled(m, false); }
+      b.direct = true;
+      p.act = { kind: header ? "head" : "volley", t: 16 };
+      SFX.airStrike(header);
+    }
+
     function startSlide(p) {
       if (p.slide > 0 || p.stun > 0) return;
       p.slide = 26;
@@ -710,6 +770,8 @@
       const b = M.ball;
       if (!c) return;
       M.stickIdle = Math.hypot(cmd.ax, cmd.ay) <= 0.08 ? M.stickIdle + 1 : 0;
+      M.stick = { ax: cmd.ax, ay: cmd.ay }; // ダイレクトの向き（ボールが届いた瞬間に使う）
+      if (M.direct && (--M.direct.t <= 0 || M.direct.p !== c || b.owner)) M.direct = null;
       if (M.setPiece && M.setPiece.taker === c) return setPieceHuman(c, cmd);
       // 忍者チームのシュートが飛んできたら、操作をキーパーへ
       if (!c.isGK && !M.setPiece && shotIncoming(0)) {
@@ -745,6 +807,9 @@
         if (b.through && b.passTarget === c && !b.owner) {
           // スルーパスの受け手は、ボールを受けるまで自動で走り込む
           receive(c, Math.max(sp, THROUGH.run));
+        } else if (M.direct && M.direct.p === c && !b.owner) {
+          // ダイレクトを押してある間は、自動でボールの通り道へ（十字キーは蹴る向きに使う）
+          receive(c, sp);
         } else if (n > 0.08) {
           c.tvx = ax * sp; c.tvy = ay * sp;
           const fn = Math.hypot(ax, ay);
@@ -767,13 +832,14 @@
       }
       if (cmd.aPressed) {
         if (b.owner === c) { M.charge = 0; M.aimLock = M.shotAim; } // ▼が出ていれば、押した瞬間の位置で止める
-        else if (!b.owner && b.z > 3 && dist(c, b) < 80) M.strikeBuf = STRIKE_BUFFER; // 浮き球にはヘディング・ボレー
+        else if (!b.owner && b.z > 3 && dist(c, b) < 80) { M.strikeBuf = STRIKE_BUFFER; M.strikeKind = "shoot"; } // 浮き球にはヘディング・ボレー
+        else if (directReady(c)) M.direct = { kind: "shoot", t: DIRECT.buffer, p: c }; // 転がってくるボールにはダイレクトシュート
         else if (b.owner && b.owner.team !== c.team && !b.owner.isGK && canShoulder(c, b.owner)) shoulderCharge(c, b.owner, cmd.dashHeld);
         else startSlide(c);
       }
       if (M.strikeBuf > 0) {
         M.strikeBuf--;
-        if (canStrike(c)) { airStrike(c, cmd.ay); M.strikeBuf = 0; }
+        if (canStrike(c)) { if (M.strikeKind === "pass") airPass(c, cmd); else airStrike(c, cmd.ay); M.strikeBuf = 0; }
         // 待っている間は、ボールが来るところへ自動で寄る（ヘディング・ボレーの手助け）
         else if (!b.owner && b.z > 3 && c.stun === 0 && c.slide === 0) seek(c, b.x + b.vx * 3, b.y + b.vy * 3, 2.6);
       }
@@ -788,6 +854,8 @@
       // B: ボールを持っていれば押した長さでパスの種類を決める（離したときに蹴る）。持っていなければ選手の切り替え
       if (cmd.bPressed) {
         if (b.owner === c) { M.passCharge = 0; M.passThrough = M.dashT > 0; } // ダッシュ中か、やめてすぐなら、このパスはスルーパス
+        else if (!b.owner && b.z > 3 && dist(c, b) < 80) { M.strikeBuf = STRIKE_BUFFER; M.strikeKind = "pass"; } // 浮き球は頭・足で味方へ落とす
+        else if (directReady(c)) M.direct = { kind: "pass", t: DIRECT.buffer, p: c }; // 転がってくるボールはダイレクトパス
         else {
           const m = nearestField(0, b, c);
           if (m) setControlled(m); // B で切り替え
@@ -1504,8 +1572,12 @@
             best.kickCd = 20;
           } else {
             // CNP のパスが、ねらった味方に届いた
-            if (best.team === 0 && b.passTarget === best && b.lastTeam === 0) addPoints(POINTS.pass, best.x, best.y);
+            if (best.team === 0 && b.passTarget === best && b.lastTeam === 0) addPoints(b.direct ? POINTS.pass + POINTS.directPass : POINTS.pass, best.x, best.y);
             giveBall(best);
+            // ダイレクトを押してあれば、止めずにそのまま蹴る
+            // 浮き球に押してあったのに、先に地面に落ちて足もとに来たときも、そのまま蹴る
+            const dr = M.direct || (M.strikeBuf > 0 ? { kind: M.strikeKind, p: M.controlled } : null);
+            if (dr && dr.p === best && best === M.controlled && !M.setPiece) { M.direct = null; M.strikeBuf = 0; directKick(best, dr.kind, M.stick); }
           }
         }
       }
@@ -1606,8 +1678,10 @@
       const k = M.lastKicker;
       M.goalTeam = team;
       M.scorer = k && k.team === team && !k.isGK ? k : null;
+      const directGoal = team === 0 && M.ball.direct && M.ball.lastTeam === 0;
       if (team === 0) {
         addPoints(POINTS.goal, LX1 - 30, M.ball.y, true);
+        if (directGoal) addPoints(POINTS.directGoal, LX1 - 60, M.ball.y + 30);
         // 決めた CNP を記録（ランキングのロスターに出る）
         if (k && k.team === 0 && k.ch && kit.cnp.run.collect(k.ch.no)) addPoints(POINTS.firstGoal, LX1 - 80, M.ball.y);
         M.flash = GOAL_FX.flash;
@@ -1623,6 +1697,7 @@
       }
       freeze(160, "goal", "GOAL!!");
       refJudge("goal");
+      if (directGoal) say("ダイレクト！", 110);
       SFX.goal(team === 0);
     }
 
@@ -1743,7 +1818,7 @@
         }
       }
       M.setPiece = null; M.throwPreview = null; M.passPreview = null; M.shotAim = null; M.aimY = null; M.aimLock = null;
-      M.charge = -1; M.passCharge = -1; M.strikeBuf = 0; M.gkSave = null;
+      M.charge = -1; M.passCharge = -1; M.strikeBuf = 0; M.direct = null; M.gkSave = null;
       M.pk = { team, kicker, keeper, phase: "choose", t: 0, cur: { c: 1, r: 1 }, stickN: true, kick: null, dive: null, from: null, to: null, result: null };
       setControlled(team === 0 ? kicker : keeper, false);
       M.lastKicker = kicker;
@@ -1925,7 +2000,7 @@
         if (d < SET_PIECE.keepAway + 5) { const k2 = (SET_PIECE.keepAway + 5) / (d || 1); q.x = x + (q.x - x) * k2 + (d ? 0 : 20); q.y = y + (q.y - y) * k2; }
       }
       M.setPiece = { kind: "freekick", taker, t: 0, wall }; M.throwPreview = null;
-      M.charge = -1; M.passCharge = -1; M.aimLock = null; M.aimY = null; M.strikeBuf = 0;
+      M.charge = -1; M.passCharge = -1; M.aimLock = null; M.aimY = null; M.strikeBuf = 0; M.direct = null;
       giveBall(taker, false);
       if (team !== 0) setControlled(nearestField(0, b), false);
       freeze(50, "restart", "FREE KICK");
@@ -2233,7 +2308,7 @@
         else if (mode === "practice") kit.status("練習モード: 相手はキーパーだけ・時間切れなし");
       },
       // ポーズ・設定・タブ切り替えなどで入力が消えたら、ダッシュの押しっぱなしも解く
-      onInputReset: () => { if (M) { M.aimLock = null; M.charge = -1; M.passCharge = -1; M.strikeBuf = 0; for (const p of M.players) p.boost = 0; } clearPending(); clearDash(); },
+      onInputReset: () => { if (M) { M.aimLock = null; M.charge = -1; M.passCharge = -1; M.strikeBuf = 0; M.direct = null; for (const p of M.players) p.boost = 0; } clearPending(); clearDash(); },
       // PC: C キーを押している間ダッシュ（離すのは下の keyup で見る）
       onKeyDown: (e) => { if (e.code === "KeyC" && !e.repeat) dashInput.key = true; },
       update: (k) => {
@@ -3126,10 +3201,18 @@
           ctx.save(); ctx.font = k.retro.font(8); ctx.textAlign = "center"; ctx.fillStyle = "#3bd1ff";
           ctx.fillText("B:PASS  A:KICK", x, y - 16); ctx.restore();
         }
-        // 浮き球が近いときは「A」で直接蹴れることを知らせる
+        // 浮き球が近いときは「A」で直接蹴れる・「B」で味方へ落とせることを知らせる
         if (!b.owner && b.z > 3 && dist(cp, b) < 80 && k.retro.blinkOn(8)) {
           ctx.save(); ctx.font = k.retro.font(9); ctx.textAlign = "center"; ctx.fillStyle = c.gold;
-          ctx.fillText(b.z > HEAD_Z ? "A:HEAD" : "A:VOLLEY", x, y - 16); ctx.restore();
+          ctx.fillText(b.z > HEAD_Z ? "A:HEAD B:PASS" : "A:VOLLEY B:PASS", x, y - 16); ctx.restore();
+        } else if (M.direct && M.direct.p === cp) {
+          // ダイレクトを押してある: 届いたら蹴ることを、点滅させずに出す
+          ctx.save(); ctx.font = k.retro.font(9); ctx.textAlign = "center"; ctx.fillStyle = c.magenta;
+          ctx.fillText(M.direct.kind === "shoot" ? "DIRECT SHOOT" : "DIRECT PASS", x, y - 16); ctx.restore();
+        } else if (directReady(cp) && k.retro.blinkOn(8)) {
+          // 転がってくるボールは、先に押しておけばダイレクトで蹴れる
+          ctx.save(); ctx.font = k.retro.font(9); ctx.textAlign = "center"; ctx.fillStyle = c.gold;
+          ctx.fillText("A:SHOOT B:PASS", x, y - 16); ctx.restore();
         }
         if (M.charge >= 0) {
           const r = Math.min(1, M.charge / 30);

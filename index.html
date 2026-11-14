@@ -2281,10 +2281,27 @@
       modeBar.style.left = `${r.left - pr.left + r.width / 2}px`;
       modeBar.style.top = `${top - pr.top}px`;
     };
+    // 練習モードだけ、プレー中に「練習をやめる」を出す（時間切れがないので、これで終える。点は 0・ランキングなし）
+    const quitBtn = document.createElement("button");
+    quitBtn.type = "button"; quitBtn.className = "sf-quit"; quitBtn.textContent = "練習をやめる";
+    modeStyle.textContent += ".sf-quit{position:absolute;z-index:2;appearance:none;font:inherit;font-size:12px;padding:5px 10px;border-radius:4px;border:2px solid #5d6b86;background:rgba(10,14,26,.85);color:#c9d3e6;cursor:pointer}";
+    quitBtn.addEventListener("click", () => {
+      quitBtn.blur();
+      if (kit.phase === "playing" && M && M.mode === "practice") kit.gameOver({ score: 0, cleared: false, progress: 0 });
+    });
+    canvasEl.parentElement.appendChild(quitBtn);
+    let quitShown = null;
     // スタート画面と結果画面だけ出す（毎フレーム見て、変わったときだけ DOM に触る）
     (function watchModes() {
       const show = kit.phase !== "playing";
       if (show !== modeShown) { modeBar.style.display = show ? "" : "none"; modeShown = show; }
+      const q = kit.phase === "playing" && !!M && M.mode === "practice";
+      if (q !== quitShown) { quitBtn.style.display = q ? "" : "none"; quitShown = q; }
+      if (q) {
+        const r = canvasEl.getBoundingClientRect(), pr = canvasEl.parentElement.getBoundingClientRect();
+        quitBtn.style.left = `${r.left - pr.left + 8}px`;
+        quitBtn.style.top = `${r.top - pr.top + 48 * (r.height / H)}px`; // 左上（選手アイコンの下）。左下はスマホのスティックと重なる
+      }
       if (show) placeModes();
       requestAnimationFrame(watchModes);
     })();

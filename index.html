@@ -63,7 +63,7 @@
       <li>PK: ペナルティエリアの中でファウルされたら PK。ゴールが9マスに分かれた画面が出るので、スティックで蹴る場所（守るときはキーパーが飛ぶ場所）を選んで A。キーパーと同じマスなら止められ、上下にひとつずれなら半々。上の段のすみはたまに枠の外へ</li>
       <li>PK戦: 同点で試合が終わったら PK戦。5本ずつ交互に蹴り（5人目はキーパー）、決まらなければ1本ずつのサドンデス。右の欄に ●（決めた）×（外した）が並びます。勝てばクリア</li>
       <li>ショルダーチャージ: ボールを持った相手と横に並んでいるときに A を押すと、肩で当たって奪いにいく（ダッシュ中は成功しやすい）。失敗するとよろける</li>
-      <li>練習モード: ⚙ の「練習モード（キーパーだけ）」を ON にしてスタート。相手はキーパーだけで、時間切れもランキング登録もない。OFF にすると普通の試合に戻る</li>
+      <li>モード: スタート画面で「練習」「試合」「PK戦」を選んでスタート（PC は ◀ ▶ キーでも選べる）。練習は相手がキーパーだけで時間切れなし、PK戦はいきなり PK戦。練習と PK戦はランキングに登録されない</li>
       <li>PC: 矢印 / WASD で移動 ・ X が A ・ Z が B ・ C を押している間ダッシュ ・ P 一時停止 ・ M 音</li>
       <li>姉妹作: <a href="https://sakuya.naoblock.com/">咲耶スクランブル</a> / <a href="https://rally.naoblock.jp/">咲耶Nounラリー</a> / <a href="https://jumpbug.naoblock.jp/">咲耶ジャンプバグ</a></li>
     </ul>
@@ -259,8 +259,20 @@
     // 練習モード: 忍者チームはキーパーだけ。時間切れもランキング登録もない（⚙ の設定で切り替え。この端末に覚える）
     const PRACTICE_KEY = "sakuya-football:practice";
     let practice = false;
-    try { practice = localStorage.getItem(PRACTICE_KEY) === "1"; } catch (e) { /* 保存できない環境では毎回オフ */ }
-    let restartForPractice = false; // プレー中に切り替えたら、設定を閉じたあと（update が動き出したとき）に始め直す
+    // モード: スタート画面で選ぶ（この端末に覚える）。カップ戦・リーグ戦を足すときは、ここに1件足して onStart で分ける
+    const MODES = [
+      { id: "practice", name: "練習", desc: "キーパーだけを相手に、パス・シュート・ヘディングの練習（時間切れ・ランキングなし）" },
+      { id: "match", name: "試合", desc: "CNP チーム vs 忍者チーム ・ 3分間の試合で勝てばクリア" },
+      { id: "pk", name: "PK戦", desc: "いきなり PK戦！ 5本ずつ蹴って、多く決めたほうの勝ち（ランキングなし）" },
+    ];
+    const MODE_KEY = "sakuya-football:mode";
+    let mode = "match";
+    try {
+      const v = localStorage.getItem(MODE_KEY);
+      if (MODES.some((m) => m.id === v)) mode = v;
+      else if (localStorage.getItem(PRACTICE_KEY) === "1") mode = "practice"; // 前の「練習モード ON」を引き継ぐ
+    } catch (e) { /* 保存できない環境では毎回「試合」 */ }
+    practice = mode === "practice";
     const pending = { aPressed: false, aReleased: false, bPressed: false, bReleased: false };
     const clearPending = () => { pending.aPressed = pending.aReleased = pending.bPressed = pending.bReleased = false; };
     // ダッシュ: 押している間（スマホは画面の右側の空いたところ、PC は C キー）、操作中の選手が速くなる。
@@ -304,7 +316,7 @@
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
         ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null, mood: "normal", moodT: 0 },
-        practice, throughPreview: null, dashT: 0, passThrough: false, cam: CAM_MIN, camY: MIDY, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, aimY: null, aimDir: 1, aimLock: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, net: null, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0, so: null,
+        practice, mode, throughPreview: null, dashT: 0, passThrough: false, cam: CAM_MIN, camY: MIDY, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, aimY: null, aimDir: 1, aimLock: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, net: null, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0, so: null,
       };
       kickoff(0);
     }
@@ -1866,9 +1878,10 @@
       const so = M.so, ok = pk.result === "goal";
       so.kicks[pk.team].push(ok);
       if (pk.result === "save") giveBall(pk.keeper, false);
-      if (ok) { SFX.whistle(false); if (pk.team === 0) addPoints(POINTS.soGoal, M.ball.x, M.ball.y); }
+      const pts = M.mode !== "pk"; // PK戦モードは点を数えない（ランキングなし）
+      if (ok) { SFX.whistle(false); if (pk.team === 0 && pts) addPoints(POINTS.soGoal, M.ball.x, M.ball.y); }
       else SFX.catch();
-      if (!ok && pk.keeper.team === 0) addPoints(POINTS.onTarget, pk.keeper.x, pk.keeper.y);
+      if (!ok && pk.keeper.team === 0 && pts) addPoints(POINTS.onTarget, pk.keeper.x, pk.keeper.y);
       say(ok ? "決まった！" : pk.result === "save" ? "止めた！" : "外れた！", 50);
       mood(ok ? "happy" : "surprised", 50);
       so.next = 1 - pk.team;
@@ -2142,6 +2155,8 @@
       const [g0, g1] = M.goals;
       const soWin = M.so ? M.so.winner === 0 : false;
       const win = g0 > g1 || soWin;
+      // PK戦モードはランキングに入れない（点は 0 で終える。登録フォームも出ない）
+      if (M.mode === "pk") { kit.gameOver({ score: 0, cleared: soWin, progress: soWin ? 100 : 50 }); return; }
       if (g0 > g1) kit.score.add(3000 + (g0 - g1) * 500);
       else if (soWin) kit.score.add(2000); // PK戦の勝ちは、試合の勝ちより少し少なめ
       kit.gameOver({ cleared: win, progress: win ? 100 : M.so ? 50 : 25 });
@@ -2206,28 +2221,22 @@
           { id: "pass", slot: "B", hint: "PASS", ariaLabel: "パス（長押しで浮き玉）／選手の切り替え", keys: ["KeyZ"],
             onPress: () => { pending.bPressed = true; }, onRelease: () => { pending.bReleased = true; } },
         ],
-        // ⚙ の設定に出す。プレー中に切り替えたら、設定を閉じたところで新しいモードで始め直す
-        toggles: [
-          { id: "practice", name: "練習モード（キーパーだけ）", onText: "ON", offText: "OFF", value: practice,
-            onChange: (v) => {
-              practice = !!v;
-              try { localStorage.setItem(PRACTICE_KEY, practice ? "1" : "0"); } catch (e) { /* 無視 */ }
-              if (kit.phase === "playing") restartForPractice = true;
-            } },
-        ],
       },
       help: {
         mobile: "左のスティックで移動、右側の空いたところを押している間ダッシュ。A でシュート・スライディング、B でパス（長押しで浮き玉）・切り替え、A＋B でロングシュート",
         pc: "矢印 / WASD で移動、C を押している間ダッシュ、X でシュート・スライディング、Z でパス（長押しで浮き玉）・切り替え、X＋Z でロングシュート（P で一時停止）",
         playing: "キックオフ！ 3分で相手より多く点を取れば勝ち",
       },
-      onStart: () => { clearPending(); clearDash(); newMatch(); },
+      onStart: () => {
+        clearPending(); clearDash(); newMatch();
+        if (mode === "pk") { M.timer = MATCH_FRAMES; startShootout(); kit.status("PK戦！ ゴールの9マスから、スティックで蹴る場所（守るときは飛ぶ場所）を選んで A"); }
+        else if (mode === "practice") kit.status("練習モード: 相手はキーパーだけ・時間切れなし");
+      },
       // ポーズ・設定・タブ切り替えなどで入力が消えたら、ダッシュの押しっぱなしも解く
       onInputReset: () => { if (M) { M.aimLock = null; M.charge = -1; M.passCharge = -1; M.strikeBuf = 0; for (const p of M.players) p.boost = 0; } clearPending(); clearDash(); },
       // PC: C キーを押している間ダッシュ（離すのは下の keyup で見る）
       onKeyDown: (e) => { if (e.code === "KeyC" && !e.repeat) dashInput.key = true; },
       update: (k) => {
-        if (restartForPractice) { restartForPractice = false; k.start(); return; }
         const a = k.input.axis();
         const cmd = { ax: -a.y, ay: a.x, aHeld: !!k.input.buttons.shoot, bHeld: !!k.input.buttons.pass, dashHeld: dashHeld(), ...pending };
         clearPending();
@@ -2236,6 +2245,56 @@
       render: (ctx, k) => render(ctx, k),
     });
     window.kit = kit; // デバッグ用・playtest が読む（消さない）
+
+    // スタート画面のモード選び（練習・試合・PK戦）。START ボタンの上に並べる。PC は ◀ ▶ キーでも選べる
+    const modeBar = document.createElement("div");
+    modeBar.className = "sf-modes";
+    modeBar.setAttribute("role", "radiogroup");
+    modeBar.setAttribute("aria-label", "モード");
+    const modeStyle = document.createElement("style");
+    modeStyle.textContent =
+      ".sf-modes{position:absolute;z-index:2;display:flex;gap:8px;transform:translate(-50%,-50%);white-space:nowrap}" +
+      ".sf-modes button{appearance:none;font:inherit;font-size:13px;padding:7px 16px;border-radius:4px;border:2px solid #5d6b86;background:rgba(10,14,26,.85);color:#c9d3e6;cursor:pointer}" +
+      ".sf-modes button[aria-checked=true]{border-color:#f5c542;color:#151515;background:#f5c542;font-weight:700}";
+    document.head.appendChild(modeStyle);
+    const setMode = (id) => {
+      mode = id; practice = id === "practice";
+      try { localStorage.setItem(MODE_KEY, id); } catch (e) { /* 覚えられなくても遊べる */ }
+      for (const btn of modeBar.children) btn.setAttribute("aria-checked", String(btn.dataset.mode === id));
+    };
+    for (const m of MODES) {
+      const btn = document.createElement("button");
+      btn.type = "button"; btn.dataset.mode = m.id; btn.textContent = m.name;
+      btn.setAttribute("role", "radio"); btn.setAttribute("aria-checked", String(m.id === mode));
+      btn.addEventListener("click", () => { setMode(m.id); kit.sfx.tone({ freq: 880, dur: 0.03, gain: 0.05 }); btn.blur(); });
+      modeBar.appendChild(btn);
+    }
+    const canvasEl = document.querySelector("canvas");
+    canvasEl.parentElement.appendChild(modeBar);
+    let modeShown = null;
+    // START ボタン（大きさはスマホと PC で違う）の実際の位置を見て、そのすぐ上に置く
+    const placeModes = () => {
+      const r = canvasEl.getBoundingClientRect(), pr = canvasEl.parentElement.getBoundingClientRect();
+      const st = document.querySelector(".sk-start");
+      const sr = st && st.offsetParent ? st.getBoundingClientRect() : null;
+      const top = sr ? sr.top - 10 - modeBar.offsetHeight / 2 : r.top + (H - 84) * (r.height / H);
+      modeBar.style.left = `${r.left - pr.left + r.width / 2}px`;
+      modeBar.style.top = `${top - pr.top}px`;
+    };
+    // スタート画面と結果画面だけ出す（毎フレーム見て、変わったときだけ DOM に触る）
+    (function watchModes() {
+      const show = kit.phase !== "playing";
+      if (show !== modeShown) { modeBar.style.display = show ? "" : "none"; modeShown = show; }
+      if (show) placeModes();
+      requestAnimationFrame(watchModes);
+    })();
+    window.addEventListener("keydown", (e) => {
+      if (kit.phase === "playing" || (e.code !== "ArrowLeft" && e.code !== "ArrowRight")) return;
+      if (e.target.closest && e.target.closest("input, textarea, select")) return; // ランキングの名前入力中は動かさない
+      const i = MODES.findIndex((m) => m.id === mode), d = e.code === "ArrowLeft" ? -1 : 1;
+      setMode(MODES[(i + d + MODES.length) % MODES.length].id);
+      kit.sfx.tone({ freq: 880, dur: 0.03, gain: 0.05 });
+    });
     window.match = () => M; // デバッグ用
     window.__sim = { newMatch: () => newMatch(), step: (cmd) => stepMatch(cmd), pk: (team) => penaltyKick(team, null), shootout: () => { M.timer = MATCH_FRAMES; M.goals = [1, 1]; startShootout(); }, M: () => M }; // 自動テスト用（試合を早送りする）
 
@@ -2803,15 +2862,6 @@
         ctx.fillStyle = "rgba(4,6,12,0.6)"; ctx.fillRect(0, 0, W, H);
         k.retro.titleText("SAKUYA FOOTBALL", "- KICK OFF 11 CNP -", 120);
         ctx.save(); ctx.textAlign = "center";
-        if (practice) {
-          ctx.font = k.retro.font(12); ctx.fillStyle = k.retro.blinkOn(30) ? "#3bd1ff" : k.retro.alpha("#3bd1ff", 0.5);
-          ctx.fillText("PRACTICE MODE", W / 2, 172);
-          ctx.font = k.retro.fontBody(12); ctx.fillStyle = c.ink;
-          ctx.fillText("練習モード: 相手はキーパーだけ・時間切れなし（⚙ で切り替え）", W / 2, 192);
-        } else {
-          ctx.font = k.retro.fontBody(12); ctx.fillStyle = c.dim;
-          ctx.fillText("⚙ の「練習モード」で、キーパーだけを相手に練習できます", W / 2, 180);
-        }
         ctx.restore();
         k.cnp.chars.forEach((ch, i) => {
           const hop = Math.abs(Math.sin(k.frame / 14 + i * 0.6)) * 10;
@@ -2821,7 +2871,7 @@
         ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(bx, 330 - bz, 7, 0, Math.PI * 2); ctx.fill();
         ctx.fillStyle = "rgba(0,0,0,0.4)"; ctx.beginPath(); ctx.ellipse(bx, 338, 7, 2.5, 0, 0, Math.PI * 2); ctx.fill();
         ctx.font = k.retro.fontBody(14); ctx.fillStyle = c.ink; ctx.textAlign = "center";
-        ctx.fillText(practice ? "キーパーだけを相手に、パス・シュート・ヘディングの練習" : "CNP チーム vs 忍者チーム ・ 3分間の試合で勝てばクリア", W / 2, 380);
+        ctx.fillText(MODES.find((m) => m.id === mode).desc, W / 2, 380);
         // 審判のちび咲耶: 笛 → 指さし → 両腕を前へ、をくり返す
         // 審判のちび咲耶（設定画の全身）。ときどき笛を吹く
         const glow = ctx.createRadialGradient(120, 430, 10, 120, 430, 110);

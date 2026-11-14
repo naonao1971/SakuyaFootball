@@ -91,6 +91,10 @@
     const MIDX = FW / 2, MIDY = FH / 2;
     const GOAL_HALF = 58, GY0 = MIDY - GOAL_HALF, GY1 = MIDY + GOAL_HALF;
     const GOAL_DEPTH = 28, BAR_Z = 34;         // ゴールの奥行きとクロスバーの高さ
+    // ゴールネット: 入ったボールは奥・横・天井で止まる（absorb = はね返る勢いの割合）。当たったところがふくらんで揺れる
+    // ゴールポストとクロスバー: 太さ（ボールの中心がこの距離まで来たら当たり）と、跳ね返る勢いの割合
+    const FRAME = { r: 5, bounce: 0.6, deflect: 0.45, glance: 0.55, glanceKeep: 0.75 }; // glance: 中心からこれ以上ずれたら「かすめる」
+    const NET = { absorb: 0.18, gap: 5, bulge: 9, minAmp: 3, life: 42, freq: 0.5, radius: 22 };
     // 画面の割り振り: 左から FIELD_W がフィールド、右の PANEL_W がスコア・時間・レーダー・審判の窓。
     // フィールドの上の ROSTER_H は、両チームの顔の帯（半透明でフィールドに重ねる）
     const PANEL_W = 230, FIELD_LEFT = 0, FIELD_W = W - PANEL_W, ROSTER_H = 46;
@@ -300,7 +304,7 @@
         timer: 0, goals: [0, 0], freeze: 0, freezeKind: "", caption: "",
         controlled: null, charge: -1, lastKicker: null, chaser: [null, null],
         ref: { x: MIDX - 20, y: MIDY + 95, vx: 0, vy: 0, anim: 0, pose: "idle", poseT: 0, point: null, bubble: null, mood: "normal", moodT: 0 },
-        practice, throughPreview: null, dashT: 0, passThrough: false, cam: CAM_MIN, camY: MIDY, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, aimY: null, aimDir: 1, aimLock: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0, so: null,
+        practice, throughPreview: null, dashT: 0, passThrough: false, cam: CAM_MIN, camY: MIDY, ended: false, flash: 0, passCharge: -1, passPreview: null, shotAim: null, aimY: null, aimDir: 1, aimLock: null, dribbleOwner: null, dribbleAhead: null, dribbleBeaten: null, shake: 0, confetti: [], popups: [], scorer: null, goalTeam: -1, net: null, switchFlash: 0, stickIdle: 0, strikeBuf: 0, lastA: -99, lastB: -99, longShot: 0, so: null,
       };
       kickoff(0);
     }
@@ -641,6 +645,7 @@
       if (M.freeze > 0) {
         if (M.freezeKind === "goal") {
           stepBall(); // ゴールネットに吸い込まれる余韻
+          if (M.net && --M.net.t <= 0) M.net = null;
           stepGoalParty();
         }
         if (M.freezeKind === "restart") {
@@ -1321,7 +1326,9 @@
         b.z = 0; b.vx = o.vx; b.vy = o.vy; b.vz = 0;
         return;
       }
+      const px = b.x, py = b.y, pz = b.z;
       b.x += b.vx * GAME_SPEED; b.y += b.vy * GAME_SPEED; b.z += b.vz * GAME_SPEED;
+      if (M.freezeKind !== "goal") frameHit(b, px, py, pz);
       if (b.z > 0) {
         b.vz -= GRAVITY * GAME_SPEED;
         // 風: 浮いているボールだけ、高いほど流される
@@ -1336,13 +1343,75 @@
       }
       const f = Math.pow(b.z > 0 ? 0.993 : 0.972, GAME_SPEED);
       b.vx *= f; b.vy *= f;
-      // ゴールの中ではネットで止まる
-      if (b.x > LX1 && b.y > GY0 && b.y < GY1 && M.freezeKind === "goal") {
-        if (b.x > LX1 + GOAL_DEPTH - 6) { b.x = LX1 + GOAL_DEPTH - 6; b.vx *= -0.2; }
+      // ゴールの中ではネットで止まる（奥・横・天井のどこからも抜けない）
+      if (M.freezeKind === "goal") netCatch(b);
+    }
+
+    // ゴールポストとクロスバー: ゴールラインを外へ越えた瞬間に、越えた場所がポストかバーの太さの中なら跳ね返す
+    function frameHit(b, px, py, pz) {
+      for (const dir of [1, -1]) {
+        const gx = dir > 0 ? LX1 : LX0;
+        if ((px - gx) * dir > 0 || (b.x - gx) * dir <= 0) continue; // このゴールのラインを外へ越えていない
+        const t = (gx - px) / (b.x - px || 1e-6);
+        const y = py + (b.y - py) * t, z = pz + (b.z - pz) * t, r = FRAME.r;
+        let kind = null, off = 0, at = 0; // off: 当たったところの中心からのずれ（-1〜1）。at: ポストの y かバーの高さ
+        for (const postY of [GY0, GY1]) {
+          if (Math.abs(y - postY) < r && z < BAR_Z + r * 0.5) { kind = "post"; off = (y - postY) / r; at = postY; }
+        }
+        if (!kind && y > GY0 && y < GY1 && Math.abs(z - BAR_Z) < r) { kind = "bar"; off = (z - BAR_Z) / r; at = BAR_Z; }
+        if (!kind) continue;
+        const speed = Math.abs(b.vx), side = Math.sign(off) || 1;
+        if (Math.abs(off) > FRAME.glance) {
+          // かすめた: 少し勢いを落として、そらされた向きへそのまま抜ける
+          // （ポストの内側・バーの下なら中へ入ってゴール、外側・上なら外へ出る。判定は checkBounds）
+          if (kind === "post") { b.y = at + side * r; b.vy += side * speed * FRAME.deflect * 0.5; }
+          else { b.z = Math.max(0, at + side * r); b.vz = side * speed * FRAME.deflect * 0.6; }
+          b.vx *= FRAME.glanceKeep;
+        } else {
+          // まともに当たった: 手前へ跳ね返る
+          b.x = gx - dir * (r * 0.6); b.y = y; b.z = Math.max(0, z);
+          b.vx = -b.vx * FRAME.bounce * (1 - Math.abs(off) * 0.4);
+          if (kind === "post") b.vy += off * speed * FRAME.deflect;
+          else b.vz = off * speed * FRAME.deflect;
+        }
+        b.passTarget = null; b.land = null; b.through = null;
+        SFX.post();
+        if (!kit.retro.reduceMotion) M.shake = Math.max(M.shake, 5);
+        say(kind === "post" ? "ポスト！" : "バー！", 50); mood("surprised", 40);
+        return;
       }
-      if (b.x < LX0 && b.y > GY0 && b.y < GY1 && M.freezeKind === "goal") {
-        if (b.x < LX0 - GOAL_DEPTH + 6) { b.x = LX0 - GOAL_DEPTH + 6; b.vx *= -0.2; }
+    }
+
+    // ゴールに入ったボールを、ネットの内側に閉じ込める。当たったら勢いを吸って、ネットを揺らす
+    function netCatch(b) {
+      const right = M.goalTeam === 0; // CNP の点なら右（LX1）のゴールに入っている
+      const gx = right ? LX1 : LX0, dir = right ? 1 : -1, g = NET.gap;
+      let d = (b.x - gx) * dir; // ゴールラインからの奥行き
+      let hit = 0;
+      // はね返っても、ゴールラインからフィールドへは戻らない（中で止まる）
+      if (d < g) { b.x = gx + dir * g; d = g; if (b.vx * dir < 0) b.vx = 0; }
+      if (d > GOAL_DEPTH - g) { b.x = gx + dir * (GOAL_DEPTH - g); hit = Math.max(hit, Math.abs(b.vx)); b.vx *= -NET.absorb; b.vy *= 0.6; }
+      if (b.y < GY0 + g) { b.y = GY0 + g; hit = Math.max(hit, Math.abs(b.vy)); b.vy *= -NET.absorb; }
+      if (b.y > GY1 - g) { b.y = GY1 - g; hit = Math.max(hit, Math.abs(b.vy)); b.vy *= -NET.absorb; }
+      // 天井は、前（クロスバー）から奥へ低くなる（drawGoal と同じ形）
+      const roof = BAR_Z * (1 - 0.4 * clamp(d / GOAL_DEPTH, 0, 1)) - 4;
+      if (b.z > roof) { b.z = roof; if (b.vz > 0) { hit = Math.max(hit, b.vz); b.vz = -b.vz * NET.absorb; } }
+      // 強く当たったときだけ揺らし直す（揺れている最中の小さな当たりでは上書きしない）
+      const amp = Math.min(1, hit / 7) * NET.bulge;
+      if (amp >= NET.minAmp && (!M.net || amp > M.net.amp * (M.net.t / NET.life) + 1)) {
+        M.net = { side: right ? 1 : 0, y: b.y, z: b.z, t: NET.life, amp };
+        SFX.net();
       }
+    }
+
+    // ネットのふくらみ（ゴールの外向き。0 なら平ら）。y と高さ h の場所で、当たったところに近いほど大きい
+    function netBulge(side, y, h) {
+      const n = M.net;
+      if (!n || n.side !== side) return 0;
+      const age = NET.life - n.t, env = n.t / NET.life;
+      const dy = y - n.y, dh = (h - n.z) * 1.6, r = NET.radius;
+      const fall = Math.exp(-(dy * dy + dh * dh) / (2 * r * r)) * Math.min(1, 0.25 + h / BAR_Z); // 地面に留めた下の端はあまり動かない
+      return n.amp * env * Math.cos(age * NET.freq) * fall;
     }
 
     function contacts() {
@@ -2095,6 +2164,8 @@
       pass(lob) { kit.sfx.tone(lob ? { freq: 260, to: 520, dur: 0.12, gain: 0.08, type: "triangle" } : { freq: 330, to: 180, dur: 0.05, gain: 0.08 }); },
       throw() { kit.sfx.tone({ freq: 240, to: 420, dur: 0.14, gain: 0.07, type: "triangle" }); },
       bounce() { kit.sfx.tone({ freq: 160, to: 110, dur: 0.04, gain: 0.05, type: "triangle" }); },
+      post() { kit.sfx.tone({ freq: 1320, to: 990, dur: 0.18, gain: 0.07, type: "square" }); kit.sfx.tone({ freq: 1980, dur: 0.1, gain: 0.04, type: "triangle" }); }, // カーン
+      net() { kit.sfx.tone({ freq: 240, to: 70, dur: 0.14, gain: 0.05, type: "sawtooth" }); }, // ネットがバサッ
       slide() { kit.sfx.noise({ dur: 0.18, gain: 0.08, filterFrom: 900, filterTo: 200 }); },
       tackle() { kit.sfx.hit(); },
       steal() { kit.sfx.tone({ freq: 520, to: 780, dur: 0.06, gain: 0.07 }); },
@@ -2312,25 +2383,44 @@
     // ゴール。side 1 が画面の上（忍者チームのゴール）、side 0 が下（CNP チームのゴール）。
     // ポストとクロスバーは地面から立てて描く。バーの高さは試合の BAR_Z と同じ（ボールの高さの描き方とそろえる）
     function drawGoal(ctx, cam, side) {
-      const gx = side === 0 ? LX0 : LX1, gb = side === 0 ? LX0 - GOAL_DEPTH : LX1 + GOAL_DEPTH;
+      const gx = side === 0 ? LX0 : LX1, dir = side === 0 ? -1 : 1, gb = gx + dir * GOAL_DEPTH;
       const FL = P(gx, GY0, cam), FR = P(gx, GY1, cam), BL = P(gb, GY0, cam), BR = P(gb, GY1, cam);
       if (Math.min(FL.y, BL.y) - BAR_Z * 1.5 > H + 10 || Math.max(FL.y, BL.y) < -10) return;
       const up = (q, h) => [q.x, q.y - h * q.s];
       const hF = BAR_Z, hB = BAR_Z * 0.6; // 前（ゴールライン）と奥のネットの高さ
-      const fl = [FL.x, FL.y], fr = [FR.x, FR.y], bl = [BL.x, BL.y], br = [BR.x, BR.y];
-      const flt = up(FL, hF), frt = up(FR, hF), blt = up(BL, hB), brt = up(BR, hB);
+      const fl = [FL.x, FL.y], fr = [FR.x, FR.y];
+      const flt = up(FL, hF), frt = up(FR, hF);
+      // 奥の網の点（ボールが当たるとふくらむ）。i = 横（GY0→GY1）、j = 高さ（地面→奥の上端）
+      const NU = 16, NV = 3;
+      const back = [];
+      for (let i = 0; i <= NU; i++) {
+        const y = GY0 + (GY1 - GY0) * i / NU, col = [];
+        for (let j = 0; j <= NV; j++) {
+          const h = hB * j / NV, q = P(gb + dir * netBulge(side, y, h), y, cam);
+          col.push(up(q, h));
+        }
+        back.push(col);
+      }
+      const bl = back[0][0], br = back[NU][0], blt = back[0][NV], brt = back[NU][NV];
+      // 天井の前の辺（クロスバー）の点
+      const front = [];
+      for (let i = 0; i <= NU; i++) { const y = GY0 + (GY1 - GY0) * i / NU; front.push(up(P(gx, y, cam), hF)); }
       const poly = (pts) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); };
+      const line = (pts) => { ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.stroke(); };
+      const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      const bottomRow = back.map((c) => c[0]), topRow = back.map((c) => c[NV]);
       // ネット（奥の面・天井・横の面）
       ctx.fillStyle = "rgba(255,255,255,0.13)";
-      for (const face of [[bl, br, brt, blt], [flt, frt, brt, blt], [fl, flt, blt, bl], [fr, frt, brt, br]]) { poly(face); ctx.fill(); }
+      poly([...bottomRow, ...topRow.slice().reverse()]); ctx.fill();
+      poly([...front, ...topRow.slice().reverse()]); ctx.fill();
+      for (const face of [[fl, flt, blt, bl], [fr, frt, brt, br]]) { poly(face); ctx.fill(); }
       ctx.strokeStyle = "rgba(255,255,255,0.4)"; ctx.lineWidth = 1;
-      const lerp = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-      const grid = (a, b, c, d, nu, nv) => { // 四角い面 a-b-c-d に網目を張る
-        for (let i = 0; i <= nu; i++) { const t = i / nu; const p0 = lerp(a, b, t), p1 = lerp(d, c, t); ctx.beginPath(); ctx.moveTo(...p0); ctx.lineTo(...p1); ctx.stroke(); }
-        for (let i = 0; i <= nv; i++) { const t = i / nv; const p0 = lerp(a, d, t), p1 = lerp(b, c, t); ctx.beginPath(); ctx.moveTo(...p0); ctx.lineTo(...p1); ctx.stroke(); }
-      };
-      grid(bl, br, brt, blt, 16, 3);
-      grid(blt, brt, frt, flt, 16, 4);
+      // 奥の面の網目
+      for (let i = 0; i <= NU; i++) line(back[i]);
+      for (let j = 0; j <= NV; j++) line(back.map((c) => c[j]));
+      // 天井の網目（前の辺から奥の上端へ）
+      for (let i = 0; i <= NU; i++) line([front[i], topRow[i]]);
+      for (let j = 0; j <= 4; j++) { const t = j / 4; line(front.map((f, i) => lerp(f, topRow[i], t))); }
       // ポストとクロスバー（白く太く）
       ctx.strokeStyle = "#ffffff"; ctx.lineCap = "round";
       ctx.lineWidth = 3 * FL.s;

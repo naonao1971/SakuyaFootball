@@ -53,7 +53,7 @@
       <li>点数: ボールを奪う +50、パスが味方に届く +30、枠に飛んだシュート +100（キーパーに取られても）、ドリブルで相手を抜く +50、ゴール +1000（その CNP の初ゴールは さらに +300）。点が入るたびに、その場所に数字が出る</li>
       <li>浮き球: ボールが浮いて近くにあるときに A を押すと、高ければヘディング、低ければボレーで直接蹴る（ゴールの近くで前を向いていればシュート）</li>
       <li>ボールを持っていないとき: A でスライディング、B で選手の切り替え（スティックを離すと、ボールに近い選手に自動でも切り替わる。走っている間は切り替わらない。切り替わった選手の足もとが光る）</li>
-      <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ ⚙ で音・全画面の設定</li>
+      <li>スマホ: 左半分を押したまま倒して移動 ・ 右下の A / B ・ 右上の ⚙ で音・全画面の設定</li>
       <li>ダッシュ: スマホは画面の右側の空いたところ（A・B 以外）を押している間、PC は C キーを押している間、操作中の選手が速くなる。走りすぎるとスタミナが切れて、その選手はしばらくダッシュできない（左のパネルのバー）</li>
       <li>スルーパス: ボールを持ってダッシュしながら、またはダッシュをやめてすぐ（約0.7秒以内）に B を押すと、向いた方向の先の空いたところへパス。行き先に水色の ×、走り込む味方に水色の輪が出て、その味方が全力で走り込む。B を長押しすると浮き玉のスルーパス（「LOB THROUGH」。相手の頭を越えて、もっと遠くへ）</li>
       <li>体でキープ: ボールを持っているとき、近くの忍者に背中を向ける（スティックで忍者と反対の方を向く）と、体でボールを守って取られにくくなる。足もとに金の弧と「KEEP」が出る。後ろからのスライディングも空振りしやすい</li>
@@ -2291,6 +2291,15 @@
     });
     canvasEl.parentElement.appendChild(quitBtn);
     let quitShown = null;
+    // ⚙ は kit だと A・B のすぐ左にあり、連打中に押してしまう。このゲームだけ右上（SCORE の右）へ移す。
+    // 出す・隠すは元の箱（A・B の箱）に合わせる（縦持ち案内や演出の間は消える）
+    const gearBtn = document.querySelector(".sk-settings-btn");
+    const gearPad = gearBtn && gearBtn.parentElement;
+    if (gearBtn) {
+      canvasEl.parentElement.appendChild(gearBtn);
+      gearBtn.style.position = "absolute"; gearBtn.style.zIndex = "3"; gearBtn.style.margin = "0";
+    }
+    let gearShown = null;
     // スタート画面と結果画面だけ出す（毎フレーム見て、変わったときだけ DOM に触る）
     (function watchModes() {
       const show = kit.phase !== "playing";
@@ -2303,6 +2312,15 @@
         quitBtn.style.top = `${r.top - pr.top + 48 * (r.height / H)}px`; // 左上（選手アイコンの下）。左下はスマホのスティックと重なる
       }
       if (show) placeModes();
+      if (gearBtn) {
+        const g = !!gearPad && gearPad.classList.contains("visible");
+        if (g !== gearShown) { gearBtn.style.display = g ? "" : "none"; gearShown = g; }
+        if (g) {
+          const r = canvasEl.getBoundingClientRect(), pr = canvasEl.parentElement.getBoundingClientRect();
+          gearBtn.style.left = `${r.right - pr.left - gearBtn.offsetWidth - 8}px`;
+          gearBtn.style.top = `${r.top - pr.top + 8}px`;
+        }
+      }
       requestAnimationFrame(watchModes);
     })();
     window.addEventListener("keydown", (e) => {

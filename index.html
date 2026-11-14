@@ -188,8 +188,8 @@
     //   fly: ボールが飛ぶフレーム数
     // PK戦（同点で試合終了のとき）: 5本ずつ交互に蹴り、決まらなければ1本ずつのサドンデス。gap: 1本ごとの間（フレーム）
     const SHOOTOUT = { rounds: 5, gap: 70 };
-    // guard: キーパーが選んだ数ごとの、1つ目・2つ目・3つ目の止める確率（合計はいつも100%）。post: ポストすれすれが決まる確率
-    const PK = { boxDepth: 158, boxHalf: 130, spot: 92, ready: 15, choose: 300, miss: 0.15, guard: [[1], [0.6, 0.4], [0.5, 0.3, 0.2]], post: 0.35, fly: 34, rowZ: [27, 15, 4], colY: 0.62 };
+    // guard: キーパーが選んだ数ごとの、1つ目・2つ目・3つ目の止める確率（合計はいつも100%）。post: ポストすれすれが決まる確率。rebound: PK戦でポストから跳ね返るのを見せるフレーム数
+    const PK = { boxDepth: 158, boxHalf: 130, spot: 92, ready: 15, choose: 300, miss: 0.15, guard: [[1], [0.6, 0.4], [0.5, 0.3, 0.2]], post: 0.35, fly: 34, rebound: 40, rowZ: [27, 15, 4], colY: 0.62 };
     const RETREAT_MARGIN = 20;                 // キーパーが持ったとき、相手はハーフラインからこれだけ自陣側へ下がる
     // 風: 試合ごとに向きと強さ（0〜max m/s）を決める。浮いているボールだけが流される（高いほど強く、高さ fullZ 以上で最大）。
     // 1 m/s あたり、1フレームに accel だけ横の速さが変わる（5 m/s で、高い浮き玉が 10〜20px ほど流れる＝若干の影響）。
@@ -1885,7 +1885,7 @@
         }
         if (go) {
           pk.phase = "fly"; pk.t = 0;
-          // 上の段のすみは、ときどき枠の外。ポストすれすれは PK.post で決まり、外れたらポスト（バー）に当たる
+          // 上の段のすみは、ときどき枠の外。ポストすれすれは PK.post で決まり、外れたらポスト（バー）に当たって跳ね返る
           pk.out = !pk.kick.post && pk.kick.r === 0 && pk.kick.c !== 1 && rnd() < PK.miss;
           pk.postIn = pk.kick.post && rnd() < PK.post;
           pk.from = { x: b.x, y: b.y };
@@ -1927,7 +1927,27 @@
           if (pk.result === "post") { SFX.post(); if (!kit.retro.reduceMotion) M.shake = Math.max(M.shake, 5); }
           if (pk.result === "save") return endPK();
         }
-        if (f >= 1) return endPK();
+        if (f >= 1) {
+          if (pk.result !== "post") return endPK();
+          // ポスト（バー）に当たったら、手前へ跳ね返る。ポストは少し内側寄りへ、バーは下へたたきつけられる
+          const inward = pk.kick.c === 0 ? 1 : pk.kick.c === 2 ? -1 : 0;
+          b.vx = -dir * (2.8 + rnd() * 1.0);
+          b.vy = inward ? inward * (rnd() * 1.4 - 0.2) : (rnd() - 0.5) * 1.6;
+          b.vz = inward ? 0.8 : -0.6;
+          b.gkIgnore = 24; // 跳ね返った直後に、飛んだキーパーへ吸いつかない（こぼれ球を詰める間をつくる）
+          say(pk.kick.c === 1 ? "バー！" : "ポスト！", 50); mood("surprised", 40);
+          // 試合中はそのままプレーが続く（こぼれ球を詰められる）。PK戦は跳ね返りを見せてから失敗
+          if (!M.so) return endPK();
+          pk.phase = "rebound"; pk.t = 0;
+        }
+        return;
+      }
+      if (pk.phase === "rebound") {
+        b.x += b.vx; b.y += b.vy; b.z += b.vz;
+        if (b.z > 0) b.vz -= GRAVITY;
+        if (b.z <= 0) { b.z = 0; if (b.vz < -1.2) { b.vz = -b.vz * 0.45; SFX.bounce(); } else b.vz = 0; }
+        b.vx *= 0.975; b.vy *= 0.975;
+        if (pk.t > PK.rebound) return endPK();
       }
     }
 
@@ -1949,9 +1969,11 @@
         refJudge("pksave");
         return;
       }
+      // ポスト（バー）: 跳ね返ったボールでそのままプレー（速さは stepPK で付けた）
+      if (pk.result === "post") return;
       // 枠の外: ゴールキック
       goalKick(1 - pk.team);
-      M.caption = pk.result === "post" ? "POST!" : "MISS!";
+      M.caption = "MISS!";
     }
 
     // ================================================================
